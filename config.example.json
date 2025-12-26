@@ -1,0 +1,5 @@
+{
+    "client_id": "YOUR_SPOTIFY_CLIENT_ID",
+    "client_secret": "YOUR_SPOTIFY_CLIENT_SECRET",
+    "sonos_room": "YOUR_SONOS_ROOM_NAME"
+}
