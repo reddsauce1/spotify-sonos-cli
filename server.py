@@ -209,11 +209,10 @@ class DJServer:
         .result-item {
             padding: 12px 15px;
             border-bottom: 1px solid rgba(255,255,255,0.1);
-            cursor: pointer;
             display: flex;
             gap: 10px;
+            align-items: center;
         }
-        .result-item:hover { background: rgba(255,255,255,0.1); }
         .result-item:last-child { border-bottom: none; }
         .result-num { 
             background: rgba(255,255,255,0.2); 
@@ -226,9 +225,37 @@ class DJServer:
             font-size: 14px;
             flex-shrink: 0;
         }
-        .result-info { flex: 1; }
-        .song-name { font-weight: bold; margin-bottom: 3px; }
-        .artist-name { color: #888; font-size: 13px; }
+        .result-info { flex: 1; min-width: 0; }
+        .song-name { font-weight: bold; margin-bottom: 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .artist-name { color: #888; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .result-actions {
+            display: flex;
+            gap: 6px;
+            flex-shrink: 0;
+        }
+        .action-btn {
+            padding: 8px 12px;
+            font-size: 11px;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-weight: bold;
+            transition: transform 0.1s;
+        }
+        .action-btn:hover { transform: scale(1.05); }
+        .action-btn:active { transform: scale(0.95); }
+        .btn-play {
+            background: #1db954;
+            color: white;
+        }
+        .btn-next {
+            background: #f59e0b;
+            color: white;
+        }
+        .btn-queue {
+            background: #6366f1;
+            color: white;
+        }
         .quick-buttons { 
             display: grid; 
             grid-template-columns: repeat(4, 1fr); 
@@ -260,6 +287,21 @@ class DJServer:
         }
         .nowplaying .label { color: #1db954; font-size: 11px; text-transform: uppercase; margin-bottom: 5px; }
         .loading { opacity: 0.6; }
+        .toast {
+            position: fixed;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: #333;
+            color: white;
+            padding: 12px 24px;
+            border-radius: 8px;
+            font-size: 14px;
+            opacity: 0;
+            transition: opacity 0.3s;
+            z-index: 1000;
+        }
+        .toast.show { opacity: 1; }
     </style>
 </head>
 <body>
@@ -314,11 +356,20 @@ class DJServer:
     <div class="status" id="status">🎧 What do you want to hear?</div>
     
     <div class="results" id="results"></div>
+    
+    <div class="toast" id="toast"></div>
 
     <script>
         // Refresh now playing on load and every 30 seconds
         refreshNowPlaying();
         setInterval(refreshNowPlaying, 30000);
+        
+        function showToast(message) {
+            const toast = document.getElementById('toast');
+            toast.textContent = message;
+            toast.classList.add('show');
+            setTimeout(() => toast.classList.remove('show'), 2500);
+        }
         
         function refreshNowPlaying() {
             fetch('/nowplaying')
@@ -374,23 +425,45 @@ class DJServer:
         
         function showResults(results) {
             const html = results.map(item => 
-                '<div class="result-item" onclick="queueTrack(' + item.num + ')">' +
+                '<div class="result-item">' +
                 '<div class="result-num">' + item.num + '</div>' +
                 '<div class="result-info">' +
                 '<div class="song-name">' + item.name + '</div>' +
                 '<div class="artist-name">' + item.artist + (item.album ? ' • ' + item.album : '') + '</div>' +
-                '</div></div>'
+                '</div>' +
+                '<div class="result-actions">' +
+                '<button class="action-btn btn-play" onclick="trackAction(' + item.num + ', \'play\')">▶️</button>' +
+                '<button class="action-btn btn-next" onclick="trackAction(' + item.num + ', \'next\')">⏭️</button>' +
+                '<button class="action-btn btn-queue" onclick="trackAction(' + item.num + ', \'queue\')">+</button>' +
+                '</div>' +
+                '</div>'
             ).join('');
             document.getElementById('results').innerHTML = html;
         }
         
-        function queueTrack(num) {
-            document.getElementById('status').innerHTML = '➕ Adding to queue...';
-            fetch('/queue?num=' + num)
+        function trackAction(num, action) {
+            const endpoint = '/' + action + '?num=' + num;
+            const messages = {
+                'play': '▶️ Playing now...',
+                'next': '⏭️ Playing next...',
+                'queue': '➕ Adding to queue...'
+            };
+            
+            showToast(messages[action]);
+            
+            fetch(endpoint)
                 .then(r => r.json())
                 .then(data => {
                     if (data.item) {
-                        document.getElementById('status').innerHTML = '✓ Queued: ' + data.item.name;
+                        const actionText = {
+                            'play': '▶️ Now playing: ',
+                            'next': '⏭️ Up next: ',
+                            'queue': '➕ Queued: '
+                        };
+                        document.getElementById('status').innerHTML = actionText[action] + data.item.name;
+                        if (action === 'play') {
+                            refreshNowPlaying();
+                        }
                     } else {
                         document.getElementById('status').innerHTML = '❌ ' + (data.error || 'Failed');
                     }
@@ -409,7 +482,7 @@ class DJServer:
                     if (cmd === 'getqueue') {
                         showQueue(data.queue || []);
                     } else {
-                        document.getElementById('status').innerHTML = '✓ ' + (data.status || 'Done');
+                        showToast('✓ ' + (data.status || 'Done'));
                         refreshNowPlaying();
                     }
                 });
