@@ -432,9 +432,9 @@ class DJServer:
                 '<div class="artist-name">' + item.artist + (item.album ? ' • ' + item.album : '') + '</div>' +
                 '</div>' +
                 '<div class="result-actions">' +
-                '<button class="action-btn btn-play" onclick="trackAction(' + item.num + ', \'play\')">▶️</button>' +
-                '<button class="action-btn btn-next" onclick="trackAction(' + item.num + ', \'next\')">⏭️</button>' +
-                '<button class="action-btn btn-queue" onclick="trackAction(' + item.num + ', \'queue\')">+</button>' +
+                '<button class="action-btn btn-play" onclick="trackAction(' + item.num + ', &quot;play&quot;)">▶️</button>' +
+                '<button class="action-btn btn-next" onclick="trackAction(' + item.num + ', &quot;next&quot;)">⏭️</button>' +
+                '<button class="action-btn btn-queue" onclick="trackAction(' + item.num + ', &quot;queue&quot;)">+</button>' +
                 '</div>' +
                 '</div>'
             ).join('');
