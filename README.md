@@ -1,44 +1,133 @@
-# Spotify Sonos CLI
+# DJ Assistant
 
-Control Spotify playback on Sonos speakers from the command line using a Raspberry Pi.
+A natural language DJ assistant that controls Spotify playback on Sonos speakers. Features a web UI, Claude AI integration, and CLI access.
+
+**Live at: https://dj.guzzle.town/ui**
 
 ## Features
 
-- Search tracks, albums, artists, playlists
-- Browse your library (playlists, liked songs, recently played, top tracks)
-- Play music on Sonos speakers
-- Like the currently playing track
-- View album track listings
-- Scheduled playback via cron
-- Full Sonos control (volume, shuffle, pause, etc.)
+- 🎵 **Natural Language Control** - "play some jazz", "queue that Beatles song", "skip this"
+- 🌐 **Web UI** - Mobile-friendly interface for party guests
+- 🤖 **Claude AI** - Understands context and conversational requests
+- 🔍 **Spotify Search** - Search tracks, albums, artists, playlists
+- 📋 **Queue Management** - Add to queue, play next, clear queue, view queue
+- 🎚️ **Playback Controls** - Play, pause, skip, previous, volume
+- ❤️ **Library Access** - Browse playlists, liked songs
+- 💻 **CLI** - Full command-line control via `dj` command
 
 ## Architecture
+
 ```
-Terminal Commands
-       ↓
-spotify-server (port 5006) ←→ Spotify API
-       ↓
-node-sonos-http-api (port 5005)
-       ↓
-Sonos Speakers
+Internet (https://dj.guzzle.town)
+            ↓
+    Cloudflare Tunnel
+            ↓
+┌─────────────────────────────────────┐
+│          Raspberry Pi               │
+├─────────────────────────────────────┤
+│  server.py (port 5006)              │
+│  ├── Web UI (/ui)                   │
+│  ├── Chat endpoint (/chat)          │
+│  ├── Claude AI integration          │
+│  └── Spotify API                    │
+│            ↓                        │
+│  node-sonos-http-api (port 5005)    │
+│            ↓                        │
+│      Sonos Speakers                 │
+└─────────────────────────────────────┘
 ```
+
+## Web UI
+
+Visit **https://dj.guzzle.town/ui** (or http://lennypi.local:5006/ui on local network)
+
+- Type natural language requests: "play something chill", "add number 3 to queue"
+- Click search results to queue them
+- Quick buttons for pause, play, skip, volume, etc.
+- Shows currently playing track
+
+## CLI Usage
+
+```bash
+# Search
+dj search bohemian rhapsody
+dj search beatles
+
+# Play from search results
+dj play 1                    # play result #1 immediately
+dj queue 2                   # add #2 to end of queue (alias: dj q)
+dj next 3                    # play #3 after current song (alias: dj n)
+
+# Playback controls
+dj pause
+dj resume                    # alias: dj r
+dj skip                      # alias: dj s
+dj prev
+
+# Volume
+dj vol                       # show current volume
+dj vol 50                    # set to 50
+dj vol up                    # +10
+dj vol down                  # -10
+
+# Queue management
+dj np                        # now playing
+dj showqueue                 # view queue (alias: dj sq)
+dj clear                     # clear queue
+
+# Library
+dj like                      # like current song
+dj playlists                 # your playlists
+dj liked                     # your liked songs
+
+# Help
+dj help
+```
+
+## API Endpoints
+
+| Endpoint | Description |
+|----------|-------------|
+| `/ui` | Web interface |
+| `/chat?message=<text>` | Natural language (Claude AI) |
+| `/search?q=<query>` | Search Spotify |
+| `/play?num=<n>` | Play search result |
+| `/queue?num=<n>` | Add to end of queue |
+| `/next?num=<n>` | Add to play next |
+| `/pause` | Pause playback |
+| `/resume` | Resume playback |
+| `/skip` | Skip track |
+| `/previous` | Previous track |
+| `/volume?level=<0-100>` | Set volume |
+| `/volume?change=<+/-10>` | Adjust volume |
+| `/nowplaying` | Current track info |
+| `/getqueue` | View queue |
+| `/clearqueue` | Clear queue |
+| `/my/playlists` | Your playlists |
+| `/my/liked` | Your liked songs |
+| `/like` | Like current track |
 
 ## Requirements
 
-- Raspberry Pi (or any Linux machine)
+- Raspberry Pi (tested on Pi 4)
 - Sonos speaker on your network
 - Spotify Premium account
-- Node.js
+- Anthropic API key (for Claude integration)
+- Cloudflare account (for public access)
 
-## Setup
+## Installation
 
-### 1. Install Node.js
+### 1. Install dependencies
+
 ```bash
-curl -fsSL https://deb.nodesource.com/setup_20.x | sudo bash -
-sudo apt-get install -y nodejs
+sudo apt update
+sudo apt install -y nodejs npm python3-pip
+
+pip install spotipy cherrypy anthropic requests --break-system-packages
 ```
 
 ### 2. Install node-sonos-http-api
+
 ```bash
 cd ~
 git clone https://github.com/jishi/node-sonos-http-api.git
@@ -46,22 +135,54 @@ cd node-sonos-http-api
 npm install
 ```
 
-Test it:
+### 3. Clone this repo
+
 ```bash
-npm start
+cd ~
+git clone https://github.com/YOUR_USERNAME/spotify-server.git
+cd spotify-server
 ```
 
-You should see it discover your Sonos speakers.
+### 4. Configure
 
-### 3. Set up Sonos API as a service
+```bash
+cp config.example.json config.json
+nano config.json
+```
+
+```json
+{
+    "client_id": "YOUR_SPOTIFY_CLIENT_ID",
+    "client_secret": "YOUR_SPOTIFY_CLIENT_SECRET",
+    "sonos_room": "Dining%20Room",
+    "anthropic_api_key": "YOUR_ANTHROPIC_API_KEY"
+}
+```
+
+- Get Spotify credentials at https://developer.spotify.com/dashboard
+- Get Anthropic API key at https://console.anthropic.com
+- Find your Sonos room name: `curl http://localhost:5005/zones`
+
+### 5. Authenticate with Spotify
+
+First-time auth requires a browser. On your Mac/PC:
+
+```bash
+pip install spotipy
+python auth.py  # Opens browser for OAuth
+scp .cache pi@lennypi:~/spotify-server/
+```
+
+### 6. Set up services
+
+**Sonos API:**
 ```bash
 sudo nano /etc/systemd/system/sonos-api.service
 ```
-```
+```ini
 [Unit]
 Description=Sonos HTTP API
 After=network-online.target
-Wants=network-online.target
 
 [Service]
 Type=simple
@@ -69,97 +190,26 @@ User=pi
 WorkingDirectory=/home/pi/node-sonos-http-api
 ExecStart=/usr/bin/node server.js
 Restart=always
-RestartSec=10
 
 [Install]
 WantedBy=multi-user.target
 ```
 
-Enable and start:
-```bash
-sudo systemctl daemon-reload
-sudo systemctl enable sonos-api
-sudo systemctl start sonos-api
-```
-
-### 4. Install Spotify server
-```bash
-cd ~
-git clone https://github.com/YOUR_USERNAME/spotify-sonos-cli.git
-cd spotify-sonos-cli
-pip install spotipy cherrypy --break-system-packages
-```
-
-### 5. Configure Spotify credentials
-
-Create a Spotify app at https://developer.spotify.com/dashboard
-
-Add `http://127.0.0.1:8888/callback` as a redirect URI.
-```bash
-cp config.example.json config.json
-nano config.json
-```
-```json
-{
-    "client_id": "YOUR_SPOTIFY_CLIENT_ID",
-    "client_secret": "YOUR_SPOTIFY_CLIENT_SECRET",
-    "sonos_room": "Dining%20Room"
-}
-```
-
-Replace `Dining%20Room` with your Sonos speaker name (use `%20` for spaces).
-
-### 6. Authenticate with Spotify
-
-First-time auth must be done on a machine with a browser.
-
-On your Mac/PC:
-```bash
-pip install spotipy
-```
-
-Create `auth.py`:
-```python
-import spotipy
-from spotipy.oauth2 import SpotifyOAuth
-import os
-
-if os.path.exists(".cache"):
-    os.remove(".cache")
-
-sp = spotipy.Spotify(auth_manager=SpotifyOAuth(
-    client_id="YOUR_CLIENT_ID",
-    client_secret="YOUR_CLIENT_SECRET",
-    redirect_uri="http://127.0.0.1:8888/callback",
-    scope="user-library-read user-library-modify playlist-read-private playlist-modify-public playlist-modify-private user-read-recently-played user-top-read",
-    cache_path=".cache"
-))
-
-print(f"Logged in as: {sp.current_user()['display_name']}")
-```
-
-Run it, authorize in browser, then copy the `.cache` file to your Pi:
-```bash
-scp .cache pi@your-pi-hostname:~/spotify-sonos-cli/
-```
-
-### 7. Set up Spotify server as a service
+**DJ Server:**
 ```bash
 sudo nano /etc/systemd/system/spotify-api.service
 ```
-```
+```ini
 [Unit]
-Description=Spotify API Server
+Description=DJ Server
 After=network-online.target
-Wants=network-online.target
 
 [Service]
 Type=simple
 User=pi
-WorkingDirectory=/home/pi/spotify-sonos-cli
-ExecStart=/usr/bin/python /home/pi/spotify-sonos-cli/server.py
+WorkingDirectory=/home/pi/spotify-server
+ExecStart=/usr/bin/python /home/pi/spotify-server/server.py
 Restart=always
-RestartSec=10
 
 [Install]
 WantedBy=multi-user.target
@@ -168,15 +218,15 @@ WantedBy=multi-user.target
 Enable and start:
 ```bash
 sudo systemctl daemon-reload
-sudo systemctl enable spotify-api
-sudo systemctl start spotify-api
+sudo systemctl enable sonos-api spotify-api
+sudo systemctl start sonos-api spotify-api
 ```
 
-### 8. Set up shell aliases
+### 7. Set up CLI aliases
 
-Add to your `~/.bashrc`:
+Add to `~/.bashrc`:
 ```bash
-source ~/spotify-sonos-cli/aliases.sh
+source ~/spotify-server/dj_aliases.sh
 ```
 
 Reload:
@@ -184,130 +234,61 @@ Reload:
 source ~/.bashrc
 ```
 
-## Usage
+### 8. Set up Cloudflare Tunnel (for public access)
 
-### Spotify Commands (sp)
+1. Create account at https://cloudflare.com
+2. Add your domain and update nameservers
+3. Go to Zero Trust → Networks → Tunnels → Create tunnel
+4. Install cloudflared on Pi:
 ```bash
-# Search
-sp search bohemian rhapsody    # search tracks
-sp album abbey road            # search albums
-sp artist beatles              # search artists
-sp playlist chill vibes        # search playlists
-
-# Album tracks
-sp tracks 1                    # show tracks for album #1 from search
-
-# Playback
-sp play 3                      # play result #3
-sp queue 2                     # add result #2 to queue
-
-# Your library
-sp my playlists                # your playlists
-sp my playlists 20             # page 2 (offset 20)
-sp my liked                    # liked songs
-sp my liked 20                 # page 2
-sp my recent                   # recently played
-sp my top                      # your top tracks
-
-# Other
-sp like                        # like current song
-sp help                        # show all commands
+curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-arm64 -o cloudflared
+chmod +x cloudflared
+sudo mv cloudflared /usr/local/bin/
 ```
-
-### Sonos Commands (sonos)
-```bash
-# Playback
-sonos play
-sonos pause
-sonos next
-sonos previous
-
-# Volume
-sonos volume/30                # set to 30
-sonos volume/+10               # increase by 10
-sonos volume/-10               # decrease by 10
-sonos mute
-sonos unmute
-
-# Play modes
-sonos shuffle/on
-sonos shuffle/off
-sonos repeat/all
-sonos repeat/one
-sonos repeat/none
-
-# Info
-sonos state                    # current playback info
-sonos help                     # show all commands
-```
-
-### Now Playing
-```bash
-nowplaying                     # show current track info
-```
-
-## Scheduled Playback
-
-Use cron to schedule music:
-```bash
-crontab -e
-```
-
-Example - play a playlist at 6:20am every day:
-```
-20 6 * * * curl "http://localhost:5005/Dining\%20Room/shuffle/on"
-20 6 * * * sleep 2 && curl "http://localhost:5005/Dining\%20Room/volume/20"
-20 6 * * * sleep 4 && curl "http://localhost:5005/Dining\%20Room/spotify/now/spotify:playlist:YOUR_PLAYLIST_ID"
-15 8 * * * curl "http://localhost:5005/Dining\%20Room/pause"
-```
-
-Note: Escape `%` as `\%` in crontab.
+5. Run the install command Cloudflare provides
+6. Add public hostname: `dj.yourdomain.com` → `http://localhost:5006`
 
 ## Troubleshooting
 
-### Check if services are running
+### Check services
 ```bash
 sudo systemctl status sonos-api
 sudo systemctl status spotify-api
+sudo systemctl status cloudflared
 ```
 
 ### View logs
 ```bash
-journalctl -u sonos-api | tail -30
-journalctl -u spotify-api | tail -30
+journalctl -u spotify-api -f
+journalctl -u cloudflared -f
 ```
 
 ### Restart services
 ```bash
-sudo systemctl restart sonos-api
-sudo systemctl restart spotify-api
+sudo systemctl restart sonos-api spotify-api cloudflared
+```
+
+### Test locally
+```bash
+curl http://localhost:5006/nowplaying
+curl "http://localhost:5006/search?q=beatles"
 ```
 
 ### Token expired
-If you get authentication errors, re-run the auth script on your Mac and copy the new `.cache` file to the Pi.
+Re-run auth.py on your Mac and copy the new `.cache` file to the Pi.
 
-### Find your Sonos speaker name
-```bash
-curl "http://localhost:5005/zones"
+## Project Structure
+
 ```
+~/spotify-server/
+├── server.py          # Main DJ server (port 5006)
+├── config.json        # Spotify + Anthropic credentials
+├── dj_aliases.sh      # CLI aliases
+├── .cache             # Spotify OAuth token
+└── README.md
 
-## Uninstall
-```bash
-# Stop and remove services
-sudo systemctl stop sonos-api spotify-api
-sudo systemctl disable sonos-api spotify-api
-sudo rm /etc/systemd/system/sonos-api.service
-sudo rm /etc/systemd/system/spotify-api.service
-sudo systemctl daemon-reload
-
-# Remove cron jobs
-crontab -e  # delete the lines
-
-# Remove projects
-rm -rf ~/node-sonos-http-api
-rm -rf ~/spotify-sonos-cli
-
-# Remove aliases from ~/.bashrc
+~/node-sonos-http-api/
+└── (Sonos control server, port 5005)
 ```
 
 ## License
