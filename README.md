@@ -2,7 +2,6 @@
 
 A natural language DJ assistant that controls Spotify playback on Sonos speakers. Features a web UI, Claude AI integration, and CLI access.
 
-**Live at: https://dj.guzzle.town/ui**
 
 ## Features
 
@@ -18,7 +17,7 @@ A natural language DJ assistant that controls Spotify playback on Sonos speakers
 ## Architecture
 
 ```
-Internet (https://dj.guzzle.town)
+Internet (url hidden)
             ↓
     Cloudflare Tunnel
             ↓
@@ -39,7 +38,6 @@ Internet (https://dj.guzzle.town)
 
 ## Web UI
 
-Visit **https://dj.guzzle.town/ui** (or http://lennypi.local:5006/ui on local network)
 
 - Type natural language requests: "play something chill", "add number 3 to queue"
 - Click search results to queue them
