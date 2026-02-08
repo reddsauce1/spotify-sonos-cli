@@ -331,6 +331,10 @@ class DJServer:
             <span class="icon">⏭</span>
             <span>Skip</span>
         </button>
+        <button class="quick-btn" onclick="loadPlaylists()">
+            <span class="icon">📚</span>
+            <span>Playlists</span>
+        </button>
         <button class="quick-btn" onclick="quickCmd('volume', 'up')">
             <span class="icon">🔊</span>
             <span>Vol +</span>
@@ -347,9 +351,9 @@ class DJServer:
             <span class="icon">🗑</span>
             <span>Clear</span>
         </button>
-        <button class="quick-btn" onclick="refreshNowPlaying()">
-            <span class="icon">🔄</span>
-            <span>Refresh</span>
+        <button class="quick-btn" onclick="getRecommendations()">
+            <span class="icon">🎲</span>
+            <span>Similar</span>
         </button>
     </div>
     
@@ -378,6 +382,7 @@ class DJServer:
                     const el = document.getElementById('nowplaying-text');
                     if (data.title && data.title !== 'Nothing playing') {
                         el.innerHTML = '<strong>' + data.title + '</strong> by ' + data.artist;
+                        loadAlbumTracks();
                     } else {
                         el.textContent = 'Nothing playing';
                     }
@@ -391,6 +396,42 @@ class DJServer:
             if (e.key === 'Enter') sendChat();
         });
         
+        function loadAlbumTracks() {
+            fetch('/album_tracks?based_on=nowplaying')
+                .then(r => r.json())
+                .then(data => {
+                    if (data.error) return;
+                    showAlbum(data);
+                })
+                .catch(() => {});
+        }
+        
+        function showAlbum(data) {
+            let html = '<div style="padding: 15px; display: flex; gap: 15px; align-items: flex-start; border-bottom: 1px solid rgba(255,255,255,0.1);">';
+            if (data.artwork) {
+                html += '<img src="' + data.artwork + '" style="width: 100px; height: 100px; border-radius: 8px;">';
+            }
+            html += '<div><div style="font-weight: bold; margin-bottom: 4px;">' + data.album + '</div>';
+            html += '<div style="color: #888; font-size: 13px;">' + data.artist + ' • ' + data.year + '</div></div></div>';
+            
+            html += data.tracks.map(item => 
+                '<div class="result-item">' +
+                '<div class="result-num">' + item.num + '</div>' +
+                '<div class="result-info">' +
+                '<div class="song-name">' + item.name + '</div>' +
+                '</div>' +
+                '<div class="result-actions">' +
+                '<button class="action-btn btn-play" onclick="trackAction(' + item.num + ', &quot;play&quot;)">▶️</button>' +
+                '<button class="action-btn btn-next" onclick="trackAction(' + item.num + ', &quot;next&quot;)">⏭️</button>' +
+                '<button class="action-btn btn-queue" onclick="trackAction(' + item.num + ', &quot;queue&quot;)">+</button>' +
+                '</div>' +
+                '</div>'
+            ).join('');
+            
+            document.getElementById('results').innerHTML = html;
+            document.getElementById('status').innerHTML = '💿 ' + data.album;
+        }
+
         function sendChat() {
             const input = document.getElementById('message');
             const message = input.value.trim();
@@ -505,6 +546,65 @@ class DJServer:
             ).join('');
             document.getElementById('results').innerHTML = html;
         }
+        function loadPlaylists() {
+            document.getElementById('status').innerHTML = '📚 Loading playlists...';
+            fetch('/my/playlists?limit=50')
+                .then(r => r.json())
+                .then(data => {
+                    document.getElementById('status').innerHTML = '📚 Your Playlists (' + data.your_playlists.length + ')';
+                    showPlaylists(data.your_playlists);
+                })
+                .catch(err => {
+                    document.getElementById('status').innerHTML = '❌ Error loading playlists';
+                });
+        }
+        
+        function showPlaylists(playlists) {
+            const html = playlists.map(item => 
+                '<div class="result-item">' +
+                '<div class="result-num">' + item.num + '</div>' +
+                '<div class="result-info">' +
+                '<div class="song-name">' + item.name + '</div>' +
+                '<div class="artist-name">' + item.tracks + ' tracks</div>' +
+                '</div>' +
+                '<div class="result-actions">' +
+                '<button class="action-btn btn-play" onclick="playPlaylist(' + item.num + ')">▶️</button>' +
+                '</div>' +
+                '</div>'
+            ).join('');
+            document.getElementById('results').innerHTML = html;
+        }
+        
+        function playPlaylist(num) {
+            showToast('▶️ Starting playlist...');
+            fetch('/play?num=' + num)
+                .then(r => r.json())
+                .then(data => {
+                    if (data.status) {
+                        document.getElementById('status').innerHTML = '▶️ Playing playlist';
+                        refreshNowPlaying();
+                    } else {
+                        document.getElementById('status').innerHTML = '❌ ' + (data.error || 'Failed');
+                    }
+                });
+        }
+        function getRecommendations() {
+            document.getElementById('status').innerHTML = '🎲 Finding similar songs...';
+            fetch('/recommend?based_on=nowplaying&limit=10')
+                .then(r => r.json())
+                .then(data => {
+                    if (data.error) {
+                        document.getElementById('status').innerHTML = '❌ ' + data.error;
+                        return;
+                    }
+                    document.getElementById('status').innerHTML = '🎲 Songs like what\\'s playing';
+                    showResults(data.recommendations);
+                })
+                .catch(err => {
+                    document.getElementById('status').innerHTML = '❌ Error getting recommendations';
+                });
+        }
+
     </script>
 </body>
 </html>'''
@@ -856,6 +956,127 @@ class DJServer:
             }
         }
 
+    @cherrypy.expose
+    @cherrypy.tools.json_out()
+    def create_playlist(self, name=None):
+        if not name:
+            return {"error": "Provide playlist name: /create_playlist?name=My%20Playlist"}
+        
+        user_id = sp.current_user()['id']
+        playlist = sp.user_playlist_create(user_id, name, public=False)
+        return {
+            "status": "created",
+            "name": playlist['name'],
+            "uri": playlist['uri'],
+            "id": playlist['id']
+        }
+    
+    @cherrypy.expose
+    @cherrypy.tools.json_out()
+    def add_to_playlist(self, playlist_id=None, num=None, uri=None):
+        if not playlist_id:
+            return {"error": "Provide playlist_id"}
+        
+        # Get track URI
+        track_uri = uri
+        if num and not uri:
+            num = int(num)
+            results = get_results()
+            if num < 1 or num > len(results):
+                return {"error": f"Invalid selection. Choose 1-{len(results)}"}
+            track_uri = results[num - 1]['uri']
+        
+        if not track_uri:
+            return {"error": "Provide num or uri"}
+        
+        sp.playlist_add_items(playlist_id, [track_uri])
+        return {"status": "added", "uri": track_uri, "playlist_id": playlist_id}
+
+    @cherrypy.expose
+    @cherrypy.tools.json_out()
+    def recommend(self, based_on=None, limit=10):
+        """Get top tracks from the current artist"""
+        
+        if based_on != "nowplaying":
+            return {"error": "Use /recommend?based_on=nowplaying"}
+        
+        # Get currently playing track's artist
+        state = requests.get(f"{SONOS_URL}/state").json()
+        track_uri = state.get('currentTrack', {}).get('uri', '')
+        
+        if 'spotify' not in track_uri:
+            return {"error": "Current track is not from Spotify"}
+        
+        decoded = urllib.parse.unquote(track_uri)
+        if 'track:' not in decoded:
+            return {"error": "Can't parse track URI"}
+        
+        track_id = decoded.split('track:')[1].split('?')[0]
+        track = sp.track(track_id)
+        artist_id = track['artists'][0]['id']
+        artist_name = track['artists'][0]['name']
+        
+        # Get artist's top tracks
+        top = sp.artist_top_tracks(artist_id)
+        
+        output = []
+        for i, t in enumerate(top['tracks'][:int(limit)], 1):
+            item = {
+                "num": i,
+                "name": t['name'],
+                "artist": t['artists'][0]['name'],
+                "album": t['album']['name'],
+                "uri": t['uri']
+            }
+            output.append(item)
+        
+        set_results(output)
+        return {"recommendations": output, "artist": artist_name}
+
+    @cherrypy.expose
+    @cherrypy.tools.json_out()
+    def album_tracks(self, based_on=None):
+        """Get all tracks from the current song's album"""
+        
+        if based_on != "nowplaying":
+            return {"error": "Use /album_tracks?based_on=nowplaying"}
+        
+        # Get currently playing track
+        state = requests.get(f"{SONOS_URL}/state").json()
+        track_uri = state.get('currentTrack', {}).get('uri', '')
+        
+        if 'spotify' not in track_uri:
+            return {"error": "Current track is not from Spotify"}
+        
+        decoded = urllib.parse.unquote(track_uri)
+        if 'track:' not in decoded:
+            return {"error": "Can't parse track URI"}
+        
+        track_id = decoded.split('track:')[1].split('?')[0]
+        track = sp.track(track_id)
+        
+        album_id = track['album']['id']
+        album = sp.album(album_id)
+        
+        output = []
+        for i, t in enumerate(album['tracks']['items'], 1):
+            item = {
+                "num": i,
+                "name": t['name'],
+                "artist": t['artists'][0]['name'],
+                "uri": t['uri'],
+                "duration_ms": t['duration_ms']
+            }
+            output.append(item)
+        
+        set_results(output)
+        return {
+            "album": album['name'],
+            "artist": album['artists'][0]['name'],
+            "artwork": album['images'][0]['url'] if album['images'] else None,
+            "year": album['release_date'][:4] if album['release_date'] else None,
+            "tracks": output
+        }
 
 if __name__ == '__main__':
     cherrypy.config.update({
