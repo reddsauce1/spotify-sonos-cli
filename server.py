@@ -27,9 +27,12 @@ SONOS_URL = f"http://localhost:5005/{SONOS_ROOM}"
 # Claude setup
 ANTHROPIC_API_KEY = config.get('anthropic_api_key', '')
 
+# Password for web UI (optional)
+
+
 # Store last search results (per session for web, global for CLI)
 search_results = {'global': []}
-
+UI_PASSWORD = config.get('ui_password', '')
 
 def get_results(session_id='global'):
     """Get search results for a session"""
@@ -149,8 +152,73 @@ class DJServer:
 
     # ==================== WEB UI ====================
 
-    @cherrypy.expose
+@cherrypy.expose
     def ui(self):
+        # Check if password is required
+        if UI_PASSWORD:
+            cookie = cherrypy.request.cookie.get('dj_auth')
+            if not cookie or cookie.value != UI_PASSWORD:
+                return '''<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>DJ Assistant - Login</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin: 0;
+        }
+        .login-box {
+            background: rgba(255,255,255,0.1);
+            padding: 40px;
+            border-radius: 15px;
+            text-align: center;
+        }
+        h1 { color: white; margin-bottom: 20px; }
+        input[type="password"] {
+            padding: 15px;
+            font-size: 18px;
+            border: none;
+            border-radius: 10px;
+            background: rgba(255,255,255,0.2);
+            color: white;
+            width: 200px;
+            text-align: center;
+        }
+        input::placeholder { color: #888; }
+        button {
+            display: block;
+            width: 100%;
+            margin-top: 15px;
+            padding: 15px;
+            font-size: 16px;
+            border: none;
+            border-radius: 10px;
+            background: #1db954;
+            color: white;
+            cursor: pointer;
+            font-weight: bold;
+        }
+        button:hover { background: #1ed760; }
+    </style>
+</head>
+<body>
+    <div class="login-box">
+        <h1>🎵 DJ Assistant</h1>
+        <form method="POST" action="/login">
+            <input type="password" name="password" placeholder="Password" autofocus>
+            <button type="submit">Enter</button>
+        </form>
+    </div>
+</body>
+</html>'''
+
         return '''<!DOCTYPE html>
 <html>
 <head>
@@ -351,10 +419,6 @@ class DJServer:
             <span class="icon">🗑</span>
             <span>Clear</span>
         </button>
-        <button class="quick-btn" onclick="getRecommendations()">
-            <span class="icon">🎲</span>
-            <span>Similar</span>
-        </button>
     </div>
     
     <div class="status" id="status">🎧 What do you want to hear?</div>
@@ -364,7 +428,6 @@ class DJServer:
     <div class="toast" id="toast"></div>
 
     <script>
-        // Refresh now playing on load and every 30 seconds
         refreshNowPlaying();
         setInterval(refreshNowPlaying, 30000);
         
@@ -546,6 +609,7 @@ class DJServer:
             ).join('');
             document.getElementById('results').innerHTML = html;
         }
+        
         function loadPlaylists() {
             document.getElementById('status').innerHTML = '📚 Loading playlists...';
             fetch('/my/playlists?limit=50')
@@ -588,26 +652,19 @@ class DJServer:
                     }
                 });
         }
-        function getRecommendations() {
-            document.getElementById('status').innerHTML = '🎲 Finding similar songs...';
-            fetch('/recommend?based_on=nowplaying&limit=10')
-                .then(r => r.json())
-                .then(data => {
-                    if (data.error) {
-                        document.getElementById('status').innerHTML = '❌ ' + data.error;
-                        return;
-                    }
-                    document.getElementById('status').innerHTML = '🎲 Songs like what\\'s playing';
-                    showResults(data.recommendations);
-                })
-                .catch(err => {
-                    document.getElementById('status').innerHTML = '❌ Error getting recommendations';
-                });
-        }
-
     </script>
 </body>
 </html>'''
+
+    @cherrypy.expose
+    def login(self, password=None):
+        if password == UI_PASSWORD:
+            cherrypy.response.cookie['dj_auth'] = password
+            cherrypy.response.cookie['dj_auth']['path'] = '/'
+            cherrypy.response.cookie['dj_auth']['max-age'] = 86400 * 7
+            raise cherrypy.HTTPRedirect('/ui')
+        else:
+            raise cherrypy.HTTPRedirect('/ui')
 
     # ==================== CHAT (Natural Language) ====================
 

@@ -7,6 +7,10 @@ A natural language DJ assistant that controls Spotify playback on Sonos speakers
 
 - 🎵 **Natural Language Control** - "play some jazz", "queue that Beatles song", "skip this"
 - 🌐 **Web UI** - Mobile-friendly interface for party guests
+- 📚 **Browse Playlists** - View and play your Spotify playlists
+- 💿 **Album View** - See full album with artwork when a song plays
+- 🎤 **Artist Top Tracks** - Discover more from the current artist
+- ➕ **Create Playlists** - Create new playlists and add songs
 - 🤖 **Claude AI** - Understands context and conversational requests
 - 🔍 **Spotify Search** - Search tracks, albums, artists, playlists
 - 📋 **Queue Management** - Add to queue, play next, clear queue, view queue
@@ -104,6 +108,10 @@ dj help
 | `/my/playlists` | Your playlists |
 | `/my/liked` | Your liked songs |
 | `/like` | Like current track |
+| `/recommend?based_on=nowplaying` | Top tracks from current artist |
+| `/album_tracks?based_on=nowplaying` | Album tracks for current song |
+| `/create_playlist?name=<name>` | Create new playlist |
+| `/add_to_playlist?playlist_id=<id>&num=<n>` | Add track to playlist |
 
 ## Requirements
 
