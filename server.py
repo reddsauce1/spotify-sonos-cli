@@ -11,6 +11,7 @@ import os
 import re
 import secrets
 import sys
+import threading
 import time
 import urllib.parse
 
@@ -61,6 +62,10 @@ DEFAULTS = {
     # Search results are per-session scratch state, not data worth keeping.
     "search_result_ttl": 3600,
     "max_search_sessions": 100,
+    # Scheduler tick. Must be under 60s or a schedule whose minute falls
+    # between two ticks is skipped entirely.
+    "schedule_tick_seconds": 20,
+    "max_schedules": 50,
 }
 
 
@@ -201,6 +206,184 @@ def _expire_search_results():
     while len(search_results) > MAX_SEARCH_SESSIONS:
         oldest = min(search_results, key=lambda s: search_results[s][0])
         del search_results[oldest]
+
+
+# ==================== SCHEDULES ====================
+#
+# Scheduled actions live in schedules.json next to config.json. A CherryPy
+# Monitor ticks every schedule_tick_seconds and runs whatever is due.
+#
+# Time handling is deliberately local wall-clock: an alarm set for 07:00 fires
+# at 07:00 whatever the clock has done overnight. The consequences of that are
+# DST-shaped -- on the spring-forward day a schedule set inside the skipped
+# hour never fires, and on fall-back the last_fired date stops the repeated
+# hour from firing it twice.
+
+SCHEDULES_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'schedules.json')
+
+SCHEDULE_TICK_SECONDS = _setting('schedule_tick_seconds')
+MAX_SCHEDULES = _setting('max_schedules')
+
+# Actions a schedule may perform, and whether each needs a uri or a volume.
+SCHEDULE_ACTIONS = {
+    'play': ('uri',),
+    'pause': (),
+    'resume': (),
+    'skip': (),
+    'previous': (),
+    'volume': ('volume',),
+    'clearqueue': (),
+}
+
+TIME_RE = re.compile(r'^([01]\d|2[0-3]):([0-5]\d)$')
+
+# Guarded because the Monitor thread reads while request handlers write.
+_schedules_lock = threading.Lock()
+_schedules = []
+
+
+def _load_schedules():
+    """Read schedules.json. A missing or corrupt file is not fatal -- losing
+    alarms is better than refusing to serve music."""
+    try:
+        with open(SCHEDULES_PATH) as f:
+            data = json.load(f)
+    except FileNotFoundError:
+        return []
+    except (ValueError, OSError) as exc:
+        log.error("Cannot read %s (%s) -- continuing with no schedules", SCHEDULES_PATH, exc)
+        return []
+
+    if not isinstance(data, list):
+        log.error("%s is not a list -- continuing with no schedules", SCHEDULES_PATH)
+        return []
+    return data
+
+
+def _save_schedules_locked():
+    """Persist via a temp file + rename, so a crash mid-write cannot leave a
+    truncated file that reads back as zero schedules. Caller holds the lock."""
+    tmp = SCHEDULES_PATH + '.tmp'
+    try:
+        with open(tmp, 'w') as f:
+            json.dump(_schedules, f, indent=2)
+        os.replace(tmp, SCHEDULES_PATH)
+    except OSError as exc:
+        log.error("Could not write %s: %s", SCHEDULES_PATH, exc)
+
+
+def _validate_schedule(time_str, action, days, uri, volume, label):
+    """Build a stored schedule from request parameters, or abort with 400."""
+    if not TIME_RE.match(time_str or ''):
+        _bad_request("time must be HH:MM in 24-hour form, e.g. 07:00")
+
+    if action not in SCHEDULE_ACTIONS:
+        _bad_request(f"action must be one of: {', '.join(sorted(SCHEDULE_ACTIONS))}")
+
+    # days: "0,1,2" with 0=Monday. Empty means every day.
+    parsed_days = []
+    for part in (days or '').split(','):
+        part = part.strip()
+        if not part:
+            continue
+        parsed_days.append(_validate_int(part, "days", 0, 6))
+    parsed_days = sorted(set(parsed_days))
+
+    entry = {
+        "id": "sch_" + secrets.token_hex(6),
+        "time": time_str,
+        "action": action,
+        "days": parsed_days,
+        "label": (label or '').strip()[:80],
+        "enabled": True,
+        "last_fired": None,
+    }
+
+    required = SCHEDULE_ACTIONS[action]
+    if 'uri' in required:
+        entry['uri'] = _validate_uri(uri)
+    if 'volume' in required or volume not in (None, ''):
+        entry['volume'] = _validate_int(volume, "volume", 0, 100)
+
+    return entry
+
+
+def _due_schedules(now=None):
+    """Claim everything due right now, marking each fired under the lock.
+
+    Marking before running matters: a Sonos call can take seconds, and the
+    tick is shorter than a minute, so an unclaimed schedule would fire twice.
+    """
+    now = now or time.localtime()
+    hhmm = f"{now.tm_hour:02d}:{now.tm_min:02d}"
+    today = f"{now.tm_year:04d}-{now.tm_mon:02d}-{now.tm_mday:02d}"
+
+    claimed = []
+    with _schedules_lock:
+        for entry in _schedules:
+            if not entry.get('enabled', True):
+                continue
+            if entry.get('time') != hhmm:
+                continue
+            days = entry.get('days') or list(range(7))
+            if now.tm_wday not in days:
+                continue
+            if entry.get('last_fired') == today:
+                continue
+            entry['last_fired'] = today
+            claimed.append(dict(entry))
+        if claimed:
+            _save_schedules_locked()
+    return claimed
+
+
+def _fire_schedule(dj, entry):
+    """Run one schedule. Never raises -- one bad entry must not stop the rest."""
+    action = entry.get('action')
+    label = entry.get('label') or action
+    try:
+        if action == 'play':
+            # Volume first, so a morning alarm cannot blast at whatever level
+            # last night ended on.
+            if entry.get('volume') is not None:
+                dj._do_volume(level=entry['volume'])
+            result = dj._do_play(uri=entry['uri'])
+        elif action == 'volume':
+            result = dj._do_volume(level=entry['volume'])
+        elif action == 'pause':
+            result = dj._do_pause()
+        elif action == 'resume':
+            result = dj._do_resume()
+        elif action == 'skip':
+            result = dj._do_skip()
+        elif action == 'previous':
+            result = dj._do_previous()
+        elif action == 'clearqueue':
+            result = dj._do_clearqueue()
+        else:
+            log.error("Schedule %r has unknown action %r", label, action)
+            return
+    except Exception as exc:
+        log.error("Schedule %r raised %s: %s", label, type(exc).__name__, exc)
+        return
+
+    if isinstance(result, dict) and 'error' in result:
+        log.error("Schedule %r failed: %s", label, result['error'])
+    else:
+        log.info("Schedule %r ran %s", label, action)
+
+
+def run_due_schedules(dj):
+    """Scheduler tick. Wrapped so an unexpected error cannot kill the Monitor
+    thread and silently stop every future alarm."""
+    try:
+        for entry in _due_schedules():
+            _fire_schedule(dj, entry)
+    except Exception as exc:
+        log.error("Scheduler tick failed: %s: %s", type(exc).__name__, exc)
+
+
+_schedules = _load_schedules()
 
 
 def _is_authenticated():
@@ -628,6 +811,77 @@ class DJServer:
             cherrypy.response.status = 503
 
         return checks
+
+    # ==================== SCHEDULES ====================
+
+    @cherrypy.expose
+    @cherrypy.tools.json_out()
+    def schedules(self):
+        """List schedules, newest state included."""
+        with _schedules_lock:
+            return {
+                "schedules": [dict(e) for e in _schedules],
+                "tick_seconds": SCHEDULE_TICK_SECONDS,
+            }
+
+    @cherrypy.expose
+    @cherrypy.tools.json_out()
+    @cherrypy.tools.allow(methods=['POST'])
+    def schedule_add(self, time=None, action=None, days=None,
+                     uri=None, volume=None, label=None):
+        """Create a schedule. POST-only: it mutates state."""
+        entry = _validate_schedule(time, action, days, uri, volume, label)
+        with _schedules_lock:
+            if len(_schedules) >= MAX_SCHEDULES:
+                _bad_request(f"at most {MAX_SCHEDULES} schedules")
+            _schedules.append(entry)
+            _save_schedules_locked()
+        log.info("Schedule added: %s %s %s", entry['time'], entry['action'],
+                 entry.get('label', ''))
+        return {"status": "added", "schedule": entry}
+
+    @cherrypy.expose
+    @cherrypy.tools.json_out()
+    @cherrypy.tools.allow(methods=['POST'])
+    def schedule_delete(self, id=None):
+        with _schedules_lock:
+            before = len(_schedules)
+            _schedules[:] = [e for e in _schedules if e.get('id') != id]
+            if len(_schedules) == before:
+                _bad_request(f"no schedule with id {id!r}")
+            _save_schedules_locked()
+        log.info("Schedule deleted: %s", id)
+        return {"status": "deleted", "id": id}
+
+    @cherrypy.expose
+    @cherrypy.tools.json_out()
+    @cherrypy.tools.allow(methods=['POST'])
+    def schedule_toggle(self, id=None):
+        with _schedules_lock:
+            for entry in _schedules:
+                if entry.get('id') == id:
+                    entry['enabled'] = not entry.get('enabled', True)
+                    _save_schedules_locked()
+                    log.info("Schedule %s %s", id,
+                             "enabled" if entry['enabled'] else "disabled")
+                    return {"status": "ok", "schedule": dict(entry)}
+        _bad_request(f"no schedule with id {id!r}")
+
+    @cherrypy.expose
+    @cherrypy.tools.json_out()
+    @cherrypy.tools.allow(methods=['POST'])
+    def schedule_run(self, id=None):
+        """Run a schedule now, without waiting for its time.
+
+        Testing an alarm by waiting until tomorrow morning is a poor feedback
+        loop; this makes a misconfigured uri or volume obvious immediately.
+        """
+        with _schedules_lock:
+            entry = next((dict(e) for e in _schedules if e.get('id') == id), None)
+        if entry is None:
+            _bad_request(f"no schedule with id {id!r}")
+        _fire_schedule(self, entry)
+        return {"status": "ran", "id": id}
 
     # ==================== CHAT (Natural Language) ====================
 
@@ -1245,8 +1499,22 @@ if __name__ == '__main__':
     if not UI_PASSWORD:
         log.warning("ui_password is empty -- every endpoint is reachable without credentials")
 
+    log.info("Loaded %d schedule(s) from %s", len(_schedules), SCHEDULES_PATH)
+
     cherrypy.config.update({
         'server.socket_host': '0.0.0.0',
         'server.socket_port': _setting('server_port')
     })
-    cherrypy.quickstart(DJServer())
+
+    dj_server = DJServer()
+
+    # A CherryPy Monitor rather than a bare thread: it starts and stops with
+    # the engine, so a restart cannot leave an orphaned ticker behind.
+    cherrypy.process.plugins.Monitor(
+        cherrypy.engine,
+        lambda: run_due_schedules(dj_server),
+        frequency=SCHEDULE_TICK_SECONDS,
+        name='dj_scheduler',
+    ).subscribe()
+
+    cherrypy.quickstart(dj_server)

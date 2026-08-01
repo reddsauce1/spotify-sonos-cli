@@ -125,3 +125,24 @@ class TestStillAuthGated:
         """Only /, /index, /ui and /login are reachable without credentials --
         adding a static mount must not quietly widen that."""
         assert server_mod.PUBLIC_PATHS == {'', '/index', '/ui', '/login'}
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node not installed")
+class TestJavaScriptIsValid:
+    """The UI is ~340 lines of JS in a script block. A syntax error there
+    breaks the entire page with nothing in the server log to show for it."""
+
+    def test_script_block_parses(self, markup):
+        script = markup.split("<script>", 1)[1].rsplit("</script>", 1)[0]
+        out = subprocess.run(["node", "--check", "-"], input=script,
+                             capture_output=True, text=True, timeout=30)
+        assert out.returncode == 0, out.stderr
+
+    def test_every_handler_referenced_by_onclick_exists(self, markup):
+        """An onclick naming a function that was renamed fails silently in the
+        browser -- the button just does nothing."""
+        called = set(re.findall(r'onclick="(\w+)\(', markup))
+        called |= set(re.findall(r"onclick=\\'(\w+)\(", markup))
+        defined = set(re.findall(r'function (\w+)\(', markup))
+        missing = called - defined
+        assert not missing, f"onclick references undefined function(s): {missing}"

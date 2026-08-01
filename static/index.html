@@ -149,6 +149,44 @@
             z-index: 1000;
         }
         .toast.show { opacity: 1; }
+
+        /* ---- Schedules ---- */
+        .sched-toggle {
+            width: 100%; margin-top: 14px; padding: 12px;
+            background: rgba(255,255,255,0.06); color: #eee;
+            border: 1px solid rgba(255,255,255,0.12); border-radius: 10px;
+            font-size: 15px; cursor: pointer;
+        }
+        .sched-panel { display: none; margin-top: 10px; }
+        .sched-panel.open { display: block; }
+        .sched-form {
+            display: grid; grid-template-columns: repeat(2, 1fr);
+            gap: 8px; margin-bottom: 12px;
+        }
+        .sched-form input, .sched-form select {
+            padding: 10px; border-radius: 8px; font-size: 15px;
+            border: 1px solid rgba(255,255,255,0.15);
+            background: rgba(0,0,0,0.25); color: #eee;
+        }
+        .sched-form .full { grid-column: 1 / -1; }
+        .sched-days { display: flex; gap: 4px; grid-column: 1 / -1; }
+        .sched-days label {
+            flex: 1; text-align: center; padding: 8px 0; font-size: 13px;
+            border-radius: 8px; background: rgba(0,0,0,0.25);
+            border: 1px solid rgba(255,255,255,0.12); cursor: pointer;
+        }
+        .sched-days input { display: none; }
+        .sched-days input:checked + span { color: #1db954; font-weight: bold; }
+        .sched-item {
+            display: flex; align-items: center; gap: 10px; padding: 12px;
+            border-bottom: 1px solid rgba(255,255,255,0.08);
+        }
+        .sched-when { font-size: 20px; font-variant-numeric: tabular-nums; min-width: 68px; }
+        .sched-meta { flex: 1; font-size: 13px; color: #999; }
+        .sched-off { opacity: 0.45; }
+        .sched-item button {
+            background: none; border: none; font-size: 17px; cursor: pointer; padding: 4px;
+        }
     </style>
 </head>
 <body>
@@ -200,6 +238,30 @@
         </button>
     </div>
     
+
+    <button class="sched-toggle" onclick="toggleSchedules()">⏰ Scheduled actions</button>
+
+    <div class="sched-panel" id="sched-panel">
+        <div class="sched-form">
+            <input type="time" id="sched-time" value="07:00">
+            <select id="sched-action" onchange="schedActionChanged()">
+                <option value="play">▶️ Play</option>
+                <option value="pause">⏸ Pause</option>
+                <option value="resume">▶️ Resume</option>
+                <option value="skip">⏭ Skip</option>
+                <option value="previous">⏮ Previous</option>
+                <option value="volume">🔊 Set volume</option>
+                <option value="clearqueue">🗑 Clear queue</option>
+            </select>
+            <input class="full" type="text" id="sched-uri" placeholder="spotify:playlist:... (for Play)">
+            <input type="number" id="sched-volume" min="0" max="100" placeholder="volume (optional)">
+            <input type="text" id="sched-label" placeholder="label, e.g. Morning">
+            <div class="sched-days" id="sched-days"></div>
+            <button class="quick-btn full" onclick="addSchedule()">Add schedule</button>
+        </div>
+        <div id="sched-list"></div>
+    </div>
+
     <div class="status" id="status">🎧 What do you want to hear?</div>
     
     <div class="results" id="results"></div>
@@ -444,6 +506,107 @@
                     }
                 });
         }
+
+        // ---- Schedules ----
+        const DAY_NAMES = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+
+        function buildDayPicker() {
+            document.getElementById('sched-days').innerHTML = DAY_NAMES.map((d, i) =>
+                '<label><input type="checkbox" class="sched-day" value="' + i + '">' +
+                '<span>' + d + '</span></label>'
+            ).join('');
+        }
+
+        function toggleSchedules() {
+            const panel = document.getElementById('sched-panel');
+            panel.classList.toggle('open');
+            if (panel.classList.contains('open')) loadSchedules();
+        }
+
+        function schedActionChanged() {
+            const action = document.getElementById('sched-action').value;
+            document.getElementById('sched-uri').style.display =
+                action === 'play' ? '' : 'none';
+        }
+
+        function describeDays(days) {
+            if (!days || days.length === 0 || days.length === 7) return 'every day';
+            return days.map(d => DAY_NAMES[d]).join(' ');
+        }
+
+        function loadSchedules() {
+            fetch('/schedules')
+                .then(r => r.json())
+                .then(data => {
+                    const list = data.schedules || [];
+                    if (!list.length) {
+                        document.getElementById('sched-list').innerHTML =
+                            '<div class="sched-meta" style="padding:12px">Nothing scheduled yet.</div>';
+                        return;
+                    }
+                    document.getElementById('sched-list').innerHTML = list.map(s => {
+                        const bits = [s.action];
+                        if (s.volume !== undefined && s.volume !== null) bits.push('vol ' + s.volume);
+                        bits.push(describeDays(s.days));
+                        return '<div class="sched-item' + (s.enabled ? '' : ' sched-off') + '">' +
+                            '<div class="sched-when">' + escapeHtml(s.time) + '</div>' +
+                            '<div class="sched-meta">' +
+                                '<div>' + escapeHtml(s.label || s.action) + '</div>' +
+                                '<div>' + escapeHtml(bits.join(' • ')) + '</div>' +
+                            '</div>' +
+                            '<button title="Run now" onclick="runSchedule(\'' + s.id + '\')">⚡</button>' +
+                            '<button title="Enable/disable" onclick="toggleSchedule(\'' + s.id + '\')">' +
+                                (s.enabled ? '🔔' : '🔕') + '</button>' +
+                            '<button title="Delete" onclick="deleteSchedule(\'' + s.id + '\')">🗑</button>' +
+                        '</div>';
+                    }).join('');
+                });
+        }
+
+        function schedPost(path, body) {
+            return fetch(path, {
+                method: 'POST',
+                headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+                body: body,
+            }).then(r => r.json().then(data => ({ok: r.ok, data})));
+        }
+
+        function addSchedule() {
+            const days = [...document.querySelectorAll('.sched-day:checked')]
+                .map(c => c.value).join(',');
+            const params = new URLSearchParams({
+                time: document.getElementById('sched-time').value,
+                action: document.getElementById('sched-action').value,
+                days: days,
+                uri: document.getElementById('sched-uri').value.trim(),
+                volume: document.getElementById('sched-volume').value,
+                label: document.getElementById('sched-label').value.trim(),
+            });
+            schedPost('/schedule_add', params.toString()).then(({ok, data}) => {
+                if (!ok) { showToast('❌ ' + (data.error || 'Could not add')); return; }
+                showToast('⏰ Scheduled');
+                document.getElementById('sched-label').value = '';
+                loadSchedules();
+            });
+        }
+
+        function deleteSchedule(id) {
+            schedPost('/schedule_delete', 'id=' + encodeURIComponent(id))
+                .then(() => { showToast('🗑 Deleted'); loadSchedules(); });
+        }
+
+        function toggleSchedule(id) {
+            schedPost('/schedule_toggle', 'id=' + encodeURIComponent(id))
+                .then(() => loadSchedules());
+        }
+
+        function runSchedule(id) {
+            schedPost('/schedule_run', 'id=' + encodeURIComponent(id))
+                .then(({ok, data}) => showToast(ok ? '⚡ Ran it' : '❌ ' + (data.error || 'Failed')));
+        }
+
+        buildDayPicker();
+        schedActionChanged();
     </script>
 </body>
 </html>

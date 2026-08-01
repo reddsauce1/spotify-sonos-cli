@@ -16,6 +16,7 @@ A natural language DJ assistant that controls Spotify playback on Sonos speakers
 - 📋 **Queue Management** - Add to queue, play next, clear queue, view queue
 - 🎚️ **Playback Controls** - Play, pause, skip, previous, volume
 - ❤️ **Library Access** - Browse playlists, liked songs
+- ⏰ **Schedules** - Wake up to music; any action on a recurring time
 - 💻 **CLI** - Full command-line control via `dj` command
 
 ## Architecture
@@ -91,6 +92,11 @@ dj help
 | Endpoint | Description |
 |----------|-------------|
 | `/health` | Sonos + Spotify reachability; 503 if either is down |
+| `/schedules` | List scheduled actions |
+| `/schedule_add` | Create one (POST) |
+| `/schedule_delete` | Remove by id (POST) |
+| `/schedule_toggle` | Enable/disable by id (POST) |
+| `/schedule_run` | Run one immediately, for testing (POST) |
 | `/ui` | Web interface |
 | `/chat?message=<text>` | Natural language (Claude AI) |
 | `/search?q=<query>` | Search Spotify |
@@ -393,6 +399,28 @@ Note that auth is *not* based on source IP. `cloudflared` connects over
 loopback, so tunnelled internet traffic is indistinguishable from a local
 request by address alone — exempting localhost would expose everything.
 
+## Schedules
+
+Open **⏰ Scheduled actions** in the web UI to run any DJ action on a recurring
+time — most usefully waking up to a playlist.
+
+Each entry has a time (24-hour, local), the days it applies to (none selected
+means every day), an action, and optionally a volume. For `play`, **the volume
+is set before playback starts**, so a morning alarm cannot blast at whatever
+level last night ended on. The ⚡ button runs an entry immediately, so you can
+check a playlist URI works without waiting until 7am.
+
+Schedules persist to `schedules.json` and survive restarts. A CherryPy Monitor
+checks every 20 seconds and matches on the exact minute, which means a server
+that was down at 07:00 and comes back at 09:30 will **not** fire the alarm late.
+
+Times are local wall-clock, so the DST consequences are the usual ones: an
+entry inside the skipped hour on the spring-forward day does not fire, and on
+fall-back the repeated hour cannot fire it twice.
+
+To get a playlist URI: right-click a playlist in Spotify → Share → Copy Spotify
+URI, or use `dj playlists` and take the `uri` field.
+
 ## Project Structure
 
 ```
@@ -403,6 +431,7 @@ spotify-server/
 ├── dj_aliases.sh         # `dj` CLI (needs jq)
 ├── config.json           # Credentials + settings   (gitignored)
 ├── .cache                # Spotify OAuth token      (gitignored)
+├── schedules.json        # Scheduled actions        (gitignored)
 ├── logs/                 # launchd stdout/stderr    (gitignored)
 ├── conftest.py           # Test fixtures; mocks Spotify and config
 └── test_*.py             # Test suite -- no network or credentials needed
