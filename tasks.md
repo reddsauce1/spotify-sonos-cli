@@ -11,7 +11,7 @@ bills the Anthropic API key on every call. Do this phase before anything else.
 
 - [x] add a _require_auth(self) method or CherryPy before_handler tool that checks the dj_auth cookie. Apply to all exposed API endpoints: search, play, queue, next, pause, resume, skip, previous, volume, nowplaying, getqueue, clearqueue, my, like, help, create_playlist, add_to_playlist, recommend, album_tracks. Return 401 JSON error if not authenticated
 - [x] replace plaintext password in cookie: generate a random session token on login with secrets.token_hex(), store in a server-side set, put the token (not the password) in the cookie. Validate by checking token membership
-- [ ] add input validation: wrap int(num) in try/except ValueError in all endpoints that accept num parameter, validate Spotify URI format (must start with spotify:) before passing to Sonos, return proper 400 JSON errors
+- [x] add input validation: wrap int(num) in try/except ValueError in all endpoints that accept num parameter, validate Spotify URI format (must start with spotify:) before passing to Sonos, return proper 400 JSON errors
 - [ ] rotate the Spotify OAuth token in .cache — it is stored in plaintext and the refresh token is long-lived, granting full library read/write. Re-run auth on a trusted machine and replace the file
 
 ## Phase 1: Make failures visible
@@ -31,7 +31,7 @@ same pass rather than touching that markup twice.
 
 - [ ] extract the ~500-line HTML/CSS/JS block from the ui() method (lines 222-657) into a new file static/index.html. Configure CherryPy to serve static files from the static/ directory. The ui() method should check auth then serve the file
 - [ ] add an escapeHtml(str) JavaScript function to the web UI that escapes &<>"' characters. Replace all innerHTML assignments that insert dynamic data (track names, artist names, album names, artwork URLs) with either textContent or escaped innerHTML
-- [ ] extract _get_result_item(self, num, session_id) helper to validate int conversion and bounds checking, replace the 4 duplicated blocks in _do_play, _do_queue, _do_next, and add_to_playlist
+- [x] extract _get_result_item(self, num, session_id) helper to validate int conversion and bounds checking, replace the 4 duplicated blocks in _do_play, _do_queue, _do_next, and add_to_playlist (done alongside input validation -- the helper *is* the validation)
 - [ ] extract _parse_track_id(self, uri) helper to parse Spotify track ID from URI, replace the 3 duplicated blocks in like, recommend, and album_tracks
 - [ ] consolidate all hardcoded magic numbers into a DEFAULTS dict at top of server.py (claude_timeout, claude_max_tokens, claude_model, search_limit, queue_display_limit, cookie_max_age, server_port). Load overrides from config.json. Use these values everywhere instead of literals
 - [ ] add config.json validation on startup: check that client_id, client_secret exist and are non-empty strings. Print clear error message and exit(1) if validation fails. Make anthropic_api_key, sonos_room, ui_password optional with defaults

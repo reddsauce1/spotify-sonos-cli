@@ -4,6 +4,7 @@ from spotipy.oauth2 import SpotifyOAuth
 import requests
 import json
 import os
+import re
 import secrets
 import urllib.parse
 
@@ -85,6 +86,57 @@ def _check_auth():
 
 
 cherrypy.tools.djauth = cherrypy.Tool('before_handler', _check_auth, priority=10)
+
+
+# ==================== INPUT VALIDATION ====================
+
+# A Spotify URI is three colon-separated parts, e.g. spotify:track:4uLU6hMCjM.
+SPOTIFY_URI_RE = re.compile(r'^spotify:[a-z]+:[A-Za-z0-9]+$')
+
+
+def _json_error_page(status, message, traceback, version):
+    """Render CherryPy's error pages as JSON.
+
+    Without this a rejected request returns an HTML page, which every
+    caller here (jq in the CLI, fetch() in the UI) fails to parse.
+    """
+    cherrypy.response.headers['Content-Type'] = 'application/json'
+    return json.dumps({"error": message or status})
+
+
+def _bad_request(message):
+    """Abort the request with a 400 that _json_error_page renders as JSON."""
+    raise cherrypy.HTTPError(400, message)
+
+
+def _validate_uri(uri):
+    """Reject anything that is not a literal Spotify URI.
+
+    This value is interpolated straight into the Sonos API path, so an
+    unvalidated uri such as '../../Bedroom/pause' would let a caller reach
+    arbitrary rooms and endpoints on the Sonos API rather than just play a
+    track. The regex also excludes the slashes and dots needed to escape.
+    """
+    if not SPOTIFY_URI_RE.match(uri or ''):
+        _bad_request("uri must look like spotify:track:<id>")
+    return uri
+
+
+def _validate_int(value, name, minimum, maximum):
+    """Coerce a query parameter to an int within an inclusive range."""
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        _bad_request(f"{name} must be a whole number, got {value!r}")
+    if number < minimum or number > maximum:
+        _bad_request(f"{name} must be between {minimum} and {maximum}, got {number}")
+    return number
+
+
+def _validate_volume_change(change):
+    """Normalise a relative volume change back to the +N / -N Sonos wants."""
+    number = _validate_int(change, "change", -100, 100)
+    return f"{number:+d}"
 
 def get_results(session_id='global'):
     """Get search results for a session"""
@@ -180,7 +232,13 @@ User: "thanks!"
 class DJServer:
 
     # Auth is on for every handler; PUBLIC_PATHS carves out the exceptions.
-    _cp_config = {'tools.djauth.on': True}
+    # Error pages render as JSON so clients never have to parse HTML.
+    _cp_config = {
+        'tools.djauth.on': True,
+        'error_page.400': _json_error_page,
+        'error_page.404': _json_error_page,
+        'error_page.500': _json_error_page,
+    }
 
     @cherrypy.expose
     @cherrypy.tools.json_out()
@@ -837,8 +895,20 @@ class DJServer:
         except ValueError:
             return {"ok": True}
 
+    def _get_result_item(self, num, session_id='global'):
+        """Resolve a 1-based selection number into a stored search result.
+
+        Raises 400 rather than ValueError/IndexError so a typo in `num`
+        cannot take the request down with an unhandled exception.
+        """
+        results = get_results(session_id)
+        if not results:
+            _bad_request("No search results yet -- run a search first")
+        number = _validate_int(num, "num", 1, len(results))
+        return results[number - 1]
+
     def _do_search(self, q, type="track", limit=5, session_id='global'):
-        results = sp.search(q=q, type=type, limit=int(limit))
+        results = sp.search(q=q, type=type, limit=_validate_int(limit, "limit", 1, 50))
         output = []
 
         if type == "track":
@@ -857,63 +927,51 @@ class DJServer:
 
     def _do_play(self, num=None, uri=None, session_id='global'):
         if uri:
-            result = self._sonos_request(f"spotify/now/{uri}")
+            result = self._sonos_request(f"spotify/now/{_validate_uri(uri)}")
             if "error" in result:
                 return result
             return {"status": "playing", "uri": uri}
 
         if num:
-            num = int(num)
-            results = get_results(session_id)
-            if num < 1 or num > len(results):
-                return {"error": f"Invalid selection. Choose 1-{len(results)}"}
-            item = results[num - 1]
-            result = self._sonos_request(f"spotify/now/{item['uri']}")
+            item = self._get_result_item(num, session_id)
+            result = self._sonos_request(f"spotify/now/{_validate_uri(item['uri'])}")
             if "error" in result:
                 return result
             return {"status": "playing", "item": item}
 
-        return {"error": "Provide num or uri"}
+        _bad_request("Provide num or uri")
 
     def _do_queue(self, num=None, uri=None, session_id='global'):
         if uri:
-            result = self._sonos_request(f"spotify/queue/{uri}")
+            result = self._sonos_request(f"spotify/queue/{_validate_uri(uri)}")
             if "error" in result:
                 return result
             return {"status": "queued", "uri": uri}
 
         if num:
-            num = int(num)
-            results = get_results(session_id)
-            if num < 1 or num > len(results):
-                return {"error": f"Invalid selection. Choose 1-{len(results)}"}
-            item = results[num - 1]
-            result = self._sonos_request(f"spotify/queue/{item['uri']}")
+            item = self._get_result_item(num, session_id)
+            result = self._sonos_request(f"spotify/queue/{_validate_uri(item['uri'])}")
             if "error" in result:
                 return result
             return {"status": "queued", "item": item}
 
-        return {"error": "Provide num or uri"}
+        _bad_request("Provide num or uri")
 
     def _do_next(self, num=None, uri=None, session_id='global'):
         if uri:
-            result = self._sonos_request(f"spotify/next/{uri}")
+            result = self._sonos_request(f"spotify/next/{_validate_uri(uri)}")
             if "error" in result:
                 return result
             return {"status": "playing next", "uri": uri}
 
         if num:
-            num = int(num)
-            results = get_results(session_id)
-            if num < 1 or num > len(results):
-                return {"error": f"Invalid selection. Choose 1-{len(results)}"}
-            item = results[num - 1]
-            result = self._sonos_request(f"spotify/next/{item['uri']}")
+            item = self._get_result_item(num, session_id)
+            result = self._sonos_request(f"spotify/next/{_validate_uri(item['uri'])}")
             if "error" in result:
                 return result
             return {"status": "playing next", "item": item}
 
-        return {"error": "Provide num or uri"}
+        _bad_request("Provide num or uri")
 
     def _do_pause(self):
         result = self._sonos_request("pause")
@@ -940,12 +998,16 @@ class DJServer:
         return {"status": "previous"}
 
     def _do_volume(self, level=None, change=None):
+        # level/change are interpolated into the Sonos path, so they are
+        # validated as numbers rather than passed through as free text.
         if level:
+            level = _validate_int(level, "level", 0, 100)
             result = self._sonos_request(f"volume/{level}")
             if "error" in result:
                 return result
             return {"status": "volume set", "level": level}
         elif change:
+            change = _validate_volume_change(change)
             result = self._sonos_request(f"volume/{change}")
             if "error" in result:
                 return result
@@ -994,7 +1056,7 @@ class DJServer:
     @cherrypy.tools.json_out()
     def search(self, q=None, type="track", limit=5):
         if not q:
-            return {"error": "No query provided. Use /search?q=your+search+terms"}
+            _bad_request("No query provided. Use /search?q=your+search+terms")
         return self._do_search(q=q, type=type, limit=limit)
 
     @cherrypy.expose
@@ -1057,8 +1119,8 @@ class DJServer:
     @cherrypy.expose
     @cherrypy.tools.json_out()
     def my(self, action=None, limit=20, offset=0):
-        limit = int(limit)
-        offset = int(offset)
+        limit = _validate_int(limit, "limit", 1, 50)
+        offset = _validate_int(offset, "offset", 0, 100000)
 
         if action == "playlists":
             results = sp.current_user_playlists(limit=limit, offset=offset)
@@ -1142,7 +1204,7 @@ class DJServer:
     @cherrypy.tools.json_out()
     def create_playlist(self, name=None):
         if not name:
-            return {"error": "Provide playlist name: /create_playlist?name=My%20Playlist"}
+            _bad_request("Provide playlist name: /create_playlist?name=My%20Playlist")
         
         user_id = sp.current_user()['id']
         playlist = sp.user_playlist_create(user_id, name, public=False)
@@ -1157,21 +1219,17 @@ class DJServer:
     @cherrypy.tools.json_out()
     def add_to_playlist(self, playlist_id=None, num=None, uri=None):
         if not playlist_id:
-            return {"error": "Provide playlist_id"}
+            _bad_request("Provide playlist_id")
         
         # Get track URI
         track_uri = uri
         if num and not uri:
-            num = int(num)
-            results = get_results()
-            if num < 1 or num > len(results):
-                return {"error": f"Invalid selection. Choose 1-{len(results)}"}
-            track_uri = results[num - 1]['uri']
-        
+            track_uri = self._get_result_item(num)['uri']
+
         if not track_uri:
-            return {"error": "Provide num or uri"}
-        
-        sp.playlist_add_items(playlist_id, [track_uri])
+            _bad_request("Provide num or uri")
+
+        sp.playlist_add_items(playlist_id, [_validate_uri(track_uri)])
         return {"status": "added", "uri": track_uri, "playlist_id": playlist_id}
 
     @cherrypy.expose
@@ -1204,7 +1262,7 @@ class DJServer:
         top = sp.artist_top_tracks(artist_id)
         
         output = []
-        for i, t in enumerate(top['tracks'][:int(limit)], 1):
+        for i, t in enumerate(top['tracks'][:_validate_int(limit, "limit", 1, 50)], 1):
             item = {
                 "num": i,
                 "name": t['name'],
