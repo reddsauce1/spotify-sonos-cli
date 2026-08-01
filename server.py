@@ -40,6 +40,65 @@ config_path = os.path.join(os.path.dirname(__file__), 'config.json')
 with open(config_path) as f:
     config = json.load(f)
 
+
+# Tunable values, all overridable per-install from config.json. Collected here
+# so they can be found and changed without reading the whole file.
+DEFAULTS = {
+    "server_port": 5006,
+    "claude_model": "claude-sonnet-5",
+    "claude_max_tokens": 512,
+    "search_limit": 5,
+    # node-sonos-http-api serves the entire queue from /queue. On a long queue
+    # that is several megabytes and takes over 6 seconds -- longer than
+    # sonos_timeout -- so getqueue used to time out every time and report an
+    # empty queue. /queue/{limit} answers in milliseconds.
+    "queue_display_limit": 50,
+    "sonos_timeout": 5,
+    "cookie_max_age": 86400 * 7,
+    # Login sessions are held in memory; the cap stops a long-running server
+    # accumulating tokens indefinitely.
+    "max_sessions": 100,
+    # Search results are per-session scratch state, not data worth keeping.
+    "search_result_ttl": 3600,
+    "max_search_sessions": 100,
+}
+
+
+def _setting(name):
+    """Value from config.json if set, otherwise the built-in default."""
+    value = config.get(name)
+    return DEFAULTS[name] if value is None else value
+
+
+def _validate_config():
+    """Refuse to start on a config that cannot possibly work.
+
+    Without this the process starts happily and every Spotify call fails at
+    request time with an authentication error, which points at the token
+    rather than at the missing credential that actually caused it.
+    """
+    problems = []
+    for key in ('client_id', 'client_secret'):
+        value = config.get(key)
+        if not isinstance(value, str) or not value.strip():
+            problems.append(f"  {key}: missing or empty (required)")
+
+    for key in ('anthropic_api_key', 'sonos_room', 'ui_password', 'cli_token'):
+        value = config.get(key)
+        if value is not None and not isinstance(value, str):
+            problems.append(f"  {key}: must be a string, got {type(value).__name__}")
+
+    if problems:
+        sys.stderr.write(
+            f"config.json at {config_path} is not usable:\n"
+            + "\n".join(problems)
+            + "\n\nSee config.example.json for the expected shape.\n"
+        )
+        raise SystemExit(1)
+
+
+_validate_config()
+
 # Spotify setup
 sp = spotipy.Spotify(auth_manager=SpotifyOAuth(
     client_id=config['client_id'],
@@ -64,11 +123,8 @@ SERVER_START = time.monotonic()
 STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'static')
 UI_INDEX_PATH = os.path.join(STATIC_DIR, 'index.html')
 
-# node-sonos-http-api serves the entire queue from /queue. On a long queue that
-# is several megabytes and takes over 6 seconds -- longer than the request
-# timeout -- so getqueue used to time out every time and report an empty queue.
-# /queue/{limit} answers in milliseconds.
-QUEUE_DISPLAY_LIMIT = 50
+QUEUE_DISPLAY_LIMIT = _setting('queue_display_limit')
+SONOS_TIMEOUT = _setting('sonos_timeout')
 
 # Claude setup
 ANTHROPIC_API_KEY = config.get('anthropic_api_key', '')
@@ -76,7 +132,8 @@ ANTHROPIC_API_KEY = config.get('anthropic_api_key', '')
 # The SDK handles retries (429 and 5xx) and connection errors with backoff.
 claude = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY) if ANTHROPIC_API_KEY else None
 
-CLAUDE_MODEL = "claude-sonnet-5"
+CLAUDE_MODEL = _setting('claude_model')
+CLAUDE_MAX_TOKENS = _setting('claude_max_tokens')
 
 # Every DJ command Claude may return. Enforced by the API rather than trusted:
 # with output_config.format the response is guaranteed to match this schema, so
@@ -113,16 +170,37 @@ CLI_TOKEN = config.get('cli_token', '')
 # Session tokens issued by /login. In-memory, so a restart logs everyone out.
 _sessions = set()
 
-# Cap on stored sessions -- each login adds one and nothing removes them, so
-# without this a long-running server leaks memory one token at a time.
-MAX_SESSIONS = 100
+MAX_SESSIONS = _setting('max_sessions')
+COOKIE_MAX_AGE = _setting('cookie_max_age')
+SEARCH_RESULT_TTL = _setting('search_result_ttl')
+MAX_SEARCH_SESSIONS = _setting('max_search_sessions')
+SEARCH_LIMIT = _setting('search_limit')
 
 # Paths reachable without credentials. Everything else is denied by default,
 # so a new endpoint is protected unless it is deliberately added here.
 PUBLIC_PATHS = {'', '/index', '/ui', '/login'}
 
-# Store last search results (per session for web, global for CLI)
-search_results = {'global': []}
+# Last search results per session, as {session_id: (stored_at, results)}.
+#
+# Every distinct session_id the web UI sends creates an entry, and nothing used
+# to remove them -- a public URL plus a few months of guests is an unbounded
+# dict. Entries expire after SEARCH_RESULT_TTL and the total is capped; the
+# data is scratch state for "play number 3", not anything worth persisting.
+search_results = {}
+
+
+def _expire_search_results():
+    """Drop stale sessions, then oldest-first if still over the cap."""
+    now = time.monotonic()
+    for session_id in [
+        s for s, (stored_at, _) in search_results.items()
+        if now - stored_at > SEARCH_RESULT_TTL
+    ]:
+        del search_results[session_id]
+
+    while len(search_results) > MAX_SEARCH_SESSIONS:
+        oldest = min(search_results, key=lambda s: search_results[s][0])
+        del search_results[oldest]
 
 
 def _is_authenticated():
@@ -165,6 +243,10 @@ cherrypy.tools.djauth = cherrypy.Tool('before_handler', _check_auth, priority=10
 
 # A Spotify URI is three colon-separated parts, e.g. spotify:track:4uLU6hMCjM.
 SPOTIFY_URI_RE = re.compile(r'^spotify:[a-z]+:[A-Za-z0-9]+$')
+
+# Spotify IDs are base62. Bounded so a malformed URI cannot push arbitrary
+# text into a Spotify API path.
+SPOTIFY_ID_RE = re.compile(r'^[A-Za-z0-9]{1,64}$')
 
 
 def _json_error_page(status, message, traceback, version):
@@ -255,13 +337,26 @@ def _handles_spotify_errors(fn):
     return wrapper
 
 def get_results(session_id='global'):
-    """Get search results for a session"""
-    return search_results.get(session_id, [])
+    """Get search results for a session, or [] if absent or expired."""
+    entry = search_results.get(session_id)
+    if entry is None:
+        return []
+
+    stored_at, results = entry
+    if time.monotonic() - stored_at > SEARCH_RESULT_TTL:
+        del search_results[session_id]
+        return []
+    return results
 
 
 def set_results(results, session_id='global'):
-    """Store search results for a session"""
-    search_results[session_id] = results
+    """Store search results for a session, then sweep.
+
+    The sweep runs *after* the insert: sweeping first trims to the cap and
+    then adds one more, so the dict settles at MAX_SEARCH_SESSIONS + 1.
+    """
+    search_results[session_id] = (time.monotonic(), results)
+    _expire_search_results()
 
 
 def call_claude(message, session_id='global'):
@@ -320,7 +415,7 @@ User: "thanks!"
     try:
         response = claude.messages.create(
             model=CLAUDE_MODEL,
-            max_tokens=512,
+            max_tokens=CLAUDE_MAX_TOKENS,
             system=system_prompt,
             # Parsing a DJ command is a short classification, and the reply is
             # blocking someone standing at a speaker -- skip thinking entirely
@@ -484,7 +579,7 @@ class DJServer:
 
             cherrypy.response.cookie['dj_auth'] = token
             cherrypy.response.cookie['dj_auth']['path'] = '/'
-            cherrypy.response.cookie['dj_auth']['max-age'] = 86400 * 7
+            cherrypy.response.cookie['dj_auth']['max-age'] = COOKIE_MAX_AGE
             cherrypy.response.cookie['dj_auth']['httponly'] = True
             log.info("Login succeeded (%d active sessions)", len(_sessions))
         else:
@@ -621,7 +716,7 @@ class DJServer:
 
     # ==================== INTERNAL METHODS ====================
 
-    def _sonos_request(self, endpoint, timeout=5):
+    def _sonos_request(self, endpoint, timeout=None):
         """Make a request to the Sonos HTTP API with error handling.
 
         Returns parsed JSON on success, or {"ok": True} if the response
@@ -633,6 +728,8 @@ class DJServer:
         the _do_* helpers propagate it. The 502 is set here, at the single
         point where an upstream failure is detected, so no caller can forget.
         """
+        if timeout is None:
+            timeout = SONOS_TIMEOUT
         url = f"{SONOS_URL}/{endpoint.lstrip('/')}"
         try:
             response = requests.get(url, timeout=timeout)
@@ -667,6 +764,29 @@ class DJServer:
         cherrypy.response.status = 502
         return {"error": message, "endpoint": endpoint}
 
+    @staticmethod
+    def _parse_track_id(uri):
+        """Extract the Spotify track ID from a Sonos currentTrack URI.
+
+        Sonos reports it wrapped and percent-encoded, e.g.
+            x-sonos-spotify:spotify%3atrack%3a0z1IquwlPxx?sid=12&flags=8232
+        so the id has to be unquoted, split out of the middle, and stripped of
+        the trailing query string.
+
+        Returns None when the track is not a Spotify track (Sonos also plays
+        radio and line-in) or when the id does not look like an id -- callers
+        pass this straight to the Spotify API.
+        """
+        if not uri or 'spotify' not in uri:
+            return None
+
+        decoded = urllib.parse.unquote(uri)
+        if 'track:' not in decoded:
+            return None
+
+        track_id = decoded.split('track:')[1].split('?')[0]
+        return track_id if SPOTIFY_ID_RE.match(track_id) else None
+
     def _get_result_item(self, num, session_id='global'):
         """Resolve a 1-based selection number into a stored search result.
 
@@ -680,7 +800,9 @@ class DJServer:
         return results[number - 1]
 
     @_handles_spotify_errors
-    def _do_search(self, q, type="track", limit=5, session_id='global'):
+    def _do_search(self, q, type="track", limit=None, session_id='global'):
+        if limit is None:
+            limit = SEARCH_LIMIT
         results = sp.search(q=q, type=type, limit=_validate_int(limit, "limit", 1, 50))
         output = []
 
@@ -833,7 +955,7 @@ class DJServer:
 
     @cherrypy.expose
     @cherrypy.tools.json_out()
-    def search(self, q=None, type="track", limit=5):
+    def search(self, q=None, type="track", limit=None):
         if not q:
             _bad_request("No query provided. Use /search?q=your+search+terms")
         return self._do_search(q=q, type=type, limit=limit)
@@ -942,16 +1064,12 @@ class DJServer:
             return state
         track_uri = state.get('currentTrack', {}).get('uri', '')
 
-        if 'spotify' not in track_uri:
+        track_id = self._parse_track_id(track_uri)
+        if not track_id:
             return {"error": "Current track is not from Spotify"}
 
-        decoded = urllib.parse.unquote(track_uri)
-        if 'track:' in decoded:
-            track_id = decoded.split('track:')[1].split('?')[0]
-            sp.current_user_saved_tracks_add(tracks=[track_id])
-            return {"status": "liked", "track": state.get('currentTrack', {}).get('title')}
-
-        return {"error": "Could not parse track URI"}
+        sp.current_user_saved_tracks_add(tracks=[track_id])
+        return {"status": "liked", "track": state.get('currentTrack', {}).get('title')}
 
     @cherrypy.expose
     @cherrypy.tools.json_out()
@@ -1030,14 +1148,10 @@ class DJServer:
             return state
         track_uri = state.get('currentTrack', {}).get('uri', '')
 
-        if 'spotify' not in track_uri:
+        track_id = self._parse_track_id(track_uri)
+        if not track_id:
             return {"error": "Current track is not from Spotify"}
 
-        decoded = urllib.parse.unquote(track_uri)
-        if 'track:' not in decoded:
-            return {"error": "Can't parse track URI"}
-
-        track_id = decoded.split('track:')[1].split('?')[0]
         track = sp.track(track_id)
         artist_id = track['artists'][0]['id']
         artist_name = track['artists'][0]['name']
@@ -1074,14 +1188,10 @@ class DJServer:
             return state
         track_uri = state.get('currentTrack', {}).get('uri', '')
 
-        if 'spotify' not in track_uri:
+        track_id = self._parse_track_id(track_uri)
+        if not track_id:
             return {"error": "Current track is not from Spotify"}
-        
-        decoded = urllib.parse.unquote(track_uri)
-        if 'track:' not in decoded:
-            return {"error": "Can't parse track URI"}
-        
-        track_id = decoded.split('track:')[1].split('?')[0]
+
         track = sp.track(track_id)
         
         album_id = track['album']['id']
@@ -1124,6 +1234,6 @@ if __name__ == '__main__':
 
     cherrypy.config.update({
         'server.socket_host': '0.0.0.0',
-        'server.socket_port': 5006
+        'server.socket_port': _setting('server_port')
     })
     cherrypy.quickstart(DJServer())
