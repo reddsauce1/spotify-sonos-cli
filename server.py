@@ -1,3 +1,4 @@
+import anthropic
 import cherrypy
 import spotipy
 from spotipy.exceptions import SpotifyBaseException, SpotifyException
@@ -30,6 +31,35 @@ SONOS_URL = f"http://localhost:5005/{SONOS_ROOM}"
 
 # Claude setup
 ANTHROPIC_API_KEY = config.get('anthropic_api_key', '')
+
+# The SDK handles retries (429 and 5xx) and connection errors with backoff.
+claude = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY) if ANTHROPIC_API_KEY else None
+
+CLAUDE_MODEL = "claude-sonnet-5"
+
+# Every DJ command Claude may return. Enforced by the API rather than trusted:
+# with output_config.format the response is guaranteed to match this schema, so
+# there is no need to defend against Claude wrapping JSON in prose or markdown.
+DJ_COMMAND_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "action": {
+            "type": "string",
+            "enum": [
+                "search", "play", "queue", "next", "pause", "resume", "skip",
+                "previous", "volume", "nowplaying", "showqueue", "clear",
+                "help", "chat",
+            ],
+        },
+        "message": {"type": "string", "description": "Friendly reply for the user"},
+        "query": {"type": "string", "description": "Search terms, for action=search"},
+        "num": {"type": "integer", "description": "Result number, for play/queue/next"},
+        "level": {"type": "integer", "description": "Volume 0-100, for action=volume"},
+        "change": {"type": "string", "description": "Relative volume such as +10"},
+    },
+    "required": ["action", "message"],
+    "additionalProperties": False,
+}
 
 # Password for web UI (optional -- if unset, the server runs unauthenticated)
 UI_PASSWORD = config.get('ui_password', '')
@@ -244,32 +274,41 @@ User: "thanks!"
 {{"action": "chat", "message": "You're welcome! Enjoy the music! 🎉"}}
 """
 
-    headers = {
-        "Content-Type": "application/json",
-        "x-api-key": ANTHROPIC_API_KEY,
-        "anthropic-version": "2023-06-01"
-    }
-    
-    data = {
-        "model": "claude-sonnet-4-20250514",
-        "max_tokens": 300,
-        "system": system_prompt,
-        "messages": [{"role": "user", "content": message}]
-    }
-    
     try:
-        response = requests.post(
-            "https://api.anthropic.com/v1/messages",
-            headers=headers,
-            json=data,
-            timeout=15
+        response = claude.messages.create(
+            model=CLAUDE_MODEL,
+            max_tokens=512,
+            system=system_prompt,
+            # Parsing a DJ command is a short classification, and the reply is
+            # blocking someone standing at a speaker -- skip thinking entirely
+            # and keep the token spend down.
+            thinking={"type": "disabled"},
+            output_config={
+                "effort": "low",
+                "format": {"type": "json_schema", "schema": DJ_COMMAND_SCHEMA},
+            },
+            messages=[{"role": "user", "content": message}],
         )
-        result = response.json()
-        text = result['content'][0]['text']
-        return json.loads(text)
-    except Exception as e:
-        print(f"Claude error: {e}")
+    except anthropic.RateLimitError:
+        # The SDK already retried with backoff; this is the give-up path.
+        return {"action": "chat", "message": "Too many requests right now -- try again in a moment!"}
+    except anthropic.APIStatusError as exc:
+        print(f"Claude API error {exc.status_code}: {exc.message}")
         return {"action": "chat", "message": "Sorry, I had trouble understanding that. Try again!"}
+    except anthropic.APIConnectionError as exc:
+        print(f"Claude unreachable: {exc}")
+        return {"action": "chat", "message": "I can't reach my brain right now. Use the buttons instead!"}
+
+    if response.stop_reason == "refusal":
+        return {"action": "chat", "message": "I'd rather not answer that one!"}
+
+    text = next((b.text for b in response.content if b.type == "text"), None)
+    if not text:
+        # max_tokens truncation is the realistic cause of an empty response.
+        print(f"Claude returned no text (stop_reason={response.stop_reason})")
+        return {"action": "chat", "message": "Sorry, I had trouble understanding that. Try again!"}
+
+    return json.loads(text)
 
 
 class DJServer:
