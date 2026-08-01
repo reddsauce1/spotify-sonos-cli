@@ -6,6 +6,7 @@ result['content'][0]['text'] with no structure check, so an API error response
 bare `except Exception` into a generic apology. These tests pin the failure
 modes to specific, distinguishable outcomes.
 """
+import logging
 import types
 from unittest.mock import patch
 
@@ -85,19 +86,24 @@ class TestFailureModes:
         assert result["action"] == "chat"
         assert "try again" in result["message"].lower()
 
-    def test_billing_error_is_logged_not_swallowed(self, server_mod, capsys):
+    def test_billing_error_is_logged_not_swallowed(self, server_mod, caplog):
         """Regression: the live account hit exactly this. The old code raised
-        KeyError('content') and printed nothing useful about the real cause."""
-        with patch.object(server_mod, "claude") as mock_claude:
-            mock_claude.messages.create.side_effect = _api_status_error(
-                400, "Your credit balance is too low to access the Anthropic API."
-            )
-            result = server_mod.call_claude("play jazz")
+        KeyError('content') and printed nothing useful about the real cause.
+
+        Asserted via caplog rather than capsys: the log handler binds to
+        sys.stdout at import time, so capsys (which swaps sys.stdout later)
+        never sees these records.
+        """
+        with caplog.at_level(logging.INFO, logger="dj"):
+            with patch.object(server_mod, "claude") as mock_claude:
+                mock_claude.messages.create.side_effect = _api_status_error(
+                    400, "Your credit balance is too low to access the Anthropic API."
+                )
+                result = server_mod.call_claude("play jazz")
 
         assert result["action"] == "chat"
-        logged = capsys.readouterr().out
-        assert "400" in logged
-        assert "credit balance" in logged
+        assert "400" in caplog.text
+        assert "credit balance" in caplog.text
 
     def test_connection_error_tells_user_to_use_buttons(self, server_mod):
         with patch.object(server_mod, "claude") as mock_claude:

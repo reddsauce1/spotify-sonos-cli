@@ -6,11 +6,34 @@ from spotipy.oauth2 import SpotifyOAuth, SpotifyOauthError
 import requests
 import functools
 import json
+import logging
 import os
 import re
 import secrets
+import sys
 import time
 import urllib.parse
+
+# Application logging.
+#
+# Deliberately NOT logging.basicConfig(): cherrypy.error and cherrypy.access
+# both carry their own handlers *and* propagate=True, so adding a root handler
+# duplicates every access-log line. Configuring only this logger, with
+# propagate off, keeps our records out of cherrypy's pipeline and vice versa.
+#
+# stdout because launchd redirects it to logs/spotify-server.log, the same
+# file as the access log -- one chronological stream is easier to correlate
+# than application errors sitting in a separate file from the request that
+# caused them.
+log = logging.getLogger('dj')
+log.setLevel(logging.INFO)
+log.propagate = False
+_handler = logging.StreamHandler(sys.stdout)
+_handler.setFormatter(logging.Formatter(
+    '%(asctime)s %(levelname)-7s %(name)s: %(message)s',
+    datefmt='%d/%b/%Y:%H:%M:%S',  # matches cherrypy's access-log timestamps
+))
+log.addHandler(_handler)
 
 # Load config
 config_path = os.path.join(os.path.dirname(__file__), 'config.json')
@@ -206,12 +229,14 @@ def _handles_spotify_errors(fn):
         try:
             return fn(*args, **kwargs)
         except SpotifyOauthError as exc:
+            log.error("Spotify authorisation failed in %s: %s", fn.__name__, exc)
             raise cherrypy.HTTPError(
                 502, f"Spotify authorisation failed ({exc}). Re-run auth.py to refresh .cache."
             )
         except SpotifyException as exc:
             status = getattr(exc, 'http_status', None)
             detail = getattr(exc, 'msg', None) or str(exc)
+            log.warning("Spotify error in %s: HTTP %s %s", fn.__name__, status, detail)
             if status == 429:
                 # Surfaced as-is so clients can back off rather than retry.
                 raise cherrypy.HTTPError(429, "Spotify rate limit reached -- try again shortly")
@@ -311,10 +336,10 @@ User: "thanks!"
         # The SDK already retried with backoff; this is the give-up path.
         return {"action": "chat", "message": "Too many requests right now -- try again in a moment!"}
     except anthropic.APIStatusError as exc:
-        print(f"Claude API error {exc.status_code}: {exc.message}")
+        log.error("Claude API error %s: %s", exc.status_code, exc.message)
         return {"action": "chat", "message": "Sorry, I had trouble understanding that. Try again!"}
     except anthropic.APIConnectionError as exc:
-        print(f"Claude unreachable: {exc}")
+        log.error("Claude unreachable: %s", exc)
         return {"action": "chat", "message": "I can't reach my brain right now. Use the buttons instead!"}
 
     if response.stop_reason == "refusal":
@@ -323,7 +348,7 @@ User: "thanks!"
     text = next((b.text for b in response.content if b.type == "text"), None)
     if not text:
         # max_tokens truncation is the realistic cause of an empty response.
-        print(f"Claude returned no text (stop_reason={response.stop_reason})")
+        log.warning("Claude returned no text (stop_reason=%s)", response.stop_reason)
         return {"action": "chat", "message": "Sorry, I had trouble understanding that. Try again!"}
 
     return json.loads(text)
@@ -440,6 +465,13 @@ class DJServer:
         return cherrypy.lib.static.serve_file(UI_INDEX_PATH, content_type='text/html')
 
     @cherrypy.expose
+    # POST only. The handler accepts `password` from either a query string or a
+    # form body, and CherryPy's access log records the full request line -- so a
+    # GET login writes the password in cleartext to logs/spotify-server.log, and
+    # onward to browser history, the Referer header and the Cloudflare tunnel's
+    # own logs. Rejecting GET means the credential cannot be put in a URL at all.
+    # The login form already posts, so this is invisible to the UI.
+    @cherrypy.tools.allow(methods=['POST'])
     def login(self, password=None):
         # compare_digest avoids leaking the password length/prefix via timing.
         if password is not None and secrets.compare_digest(password, UI_PASSWORD):
@@ -454,6 +486,11 @@ class DJServer:
             cherrypy.response.cookie['dj_auth']['path'] = '/'
             cherrypy.response.cookie['dj_auth']['max-age'] = 86400 * 7
             cherrypy.response.cookie['dj_auth']['httponly'] = True
+            log.info("Login succeeded (%d active sessions)", len(_sessions))
+        else:
+            # Never log the submitted value -- a near-miss typo of the real
+            # password would end up in a file that is not treated as secret.
+            log.warning("Login failed")
         raise cherrypy.HTTPRedirect('/ui')
 
     @cherrypy.expose
@@ -626,6 +663,7 @@ class DJServer:
         Without this the caller sees HTTP 200 and a body it may never inspect,
         so a dead Sonos looks like a successful pause.
         """
+        log.warning("Sonos %s failed: %s", endpoint, message)
         cherrypy.response.status = 502
         return {"error": message, "endpoint": endpoint}
 
@@ -1070,6 +1108,20 @@ class DJServer:
         }
 
 if __name__ == '__main__':
+    # One line stating what this process actually believes, so a misconfigured
+    # restart is visible in the log instead of being inferred from behaviour.
+    # No secret values -- only whether each one is present.
+    log.info(
+        "Starting DJ server: room=%s model=%s auth=%s cli_token=%s claude=%s",
+        SONOS_ROOM,
+        CLAUDE_MODEL,
+        "on" if UI_PASSWORD else "OFF (all endpoints public)",
+        "set" if CLI_TOKEN else "MISSING (dj CLI will get 401s)",
+        "configured" if claude else "disabled (no api key)",
+    )
+    if not UI_PASSWORD:
+        log.warning("ui_password is empty -- every endpoint is reachable without credentials")
+
     cherrypy.config.update({
         'server.socket_host': '0.0.0.0',
         'server.socket_port': 5006

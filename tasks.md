@@ -36,7 +36,7 @@ same pass rather than touching that markup twice.
 - [ ] consolidate all hardcoded magic numbers into a DEFAULTS dict at top of server.py (claude_timeout, claude_max_tokens, claude_model, search_limit, queue_display_limit, cookie_max_age, server_port). Load overrides from config.json. Use these values everywhere instead of literals
 - [ ] add config.json validation on startup: check that client_id, client_secret exist and are non-empty strings. Print clear error message and exit(1) if validation fails. Make anthropic_api_key, sonos_room, ui_password optional with defaults
 - [ ] add session expiry to search_results: store (timestamp, results) tuples, add a cleanup function that removes entries older than 1 hour, call cleanup on every new search, cap total sessions at 100
-- [ ] replace all print() calls with Python logging module. Create a logger with structured format including timestamp and level. Configure for systemd journal output
+- [x] replace all print() calls with Python logging module. Create a logger with structured format including timestamp and level. Configure for systemd journal output
 - [x] replace the raw requests.post() call to Anthropic API in call_claude() with the anthropic Python SDK (import anthropic, client = anthropic.Anthropic()). Use client.messages.create() which handles retries, error types, and API versioning automatically
 
 ## Phase 3: Features
