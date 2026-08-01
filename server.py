@@ -9,6 +9,7 @@ import json
 import os
 import re
 import secrets
+import time
 import urllib.parse
 
 # Load config
@@ -27,7 +28,13 @@ sp = spotipy.Spotify(auth_manager=SpotifyOAuth(
 
 # Sonos setup
 SONOS_ROOM = config.get('sonos_room', 'Dining%20Room')
-SONOS_URL = f"http://localhost:5005/{SONOS_ROOM}"
+# /zones and other API-wide endpoints are not room-scoped, so keep the base
+# separate from the room-prefixed URL the playback helpers use.
+SONOS_BASE_URL = "http://localhost:5005"
+SONOS_URL = f"{SONOS_BASE_URL}/{SONOS_ROOM}"
+
+# Monotonic so uptime is unaffected by the clock being adjusted under us.
+SERVER_START = time.monotonic()
 
 # Claude setup
 ANTHROPIC_API_KEY = config.get('anthropic_api_key', '')
@@ -868,6 +875,47 @@ class DJServer:
             cherrypy.response.cookie['dj_auth']['max-age'] = 86400 * 7
             cherrypy.response.cookie['dj_auth']['httponly'] = True
         raise cherrypy.HTTPRedirect('/ui')
+
+    @cherrypy.expose
+    @cherrypy.tools.json_out()
+    def health(self):
+        """Report whether Sonos and Spotify are actually reachable.
+
+        Deliberately NOT wrapped in _handles_spotify_errors: that decorator
+        aborts with a 502 on any Spotify failure, which is precisely the
+        condition this endpoint exists to report. It must return a body.
+
+        Also deliberately not in PUBLIC_PATHS -- it makes a live Spotify call,
+        so leaving it open would let anyone burn the account's rate limit.
+        Monitors authenticate with the X-DJ-Token header like the CLI does.
+        """
+        checks = {}
+
+        try:
+            response = requests.get(f"{SONOS_BASE_URL}/zones", timeout=3)
+            checks["sonos"] = (
+                "ok" if response.status_code == 200
+                else f"error: HTTP {response.status_code}"
+            )
+        except requests.exceptions.RequestException as exc:
+            # Class name only -- the full message can carry internal hostnames.
+            checks["sonos"] = f"error: {exc.__class__.__name__}"
+
+        try:
+            sp.me()
+            checks["spotify"] = "ok"
+        except SpotifyBaseException as exc:
+            checks["spotify"] = f"error: {exc.__class__.__name__}"
+        except requests.exceptions.RequestException as exc:
+            checks["spotify"] = f"error: {exc.__class__.__name__}"
+
+        checks["uptime_seconds"] = round(time.monotonic() - SERVER_START)
+
+        # 503 so a monitor can alert on the status code alone.
+        if checks["sonos"] != "ok" or checks["spotify"] != "ok":
+            cherrypy.response.status = 503
+
+        return checks
 
     # ==================== CHAT (Natural Language) ====================
 

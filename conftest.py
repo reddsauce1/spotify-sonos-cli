@@ -5,6 +5,7 @@ import sys
 import json
 from unittest.mock import patch, MagicMock
 
+import cherrypy
 import pytest
 
 
@@ -19,11 +20,16 @@ _FAKE_CONFIG = {
 
 
 @pytest.fixture(autouse=True)
-def _patch_server_imports(monkeypatch):
-    """Ensure server module can be imported without real credentials or network."""
-    # If server is already imported, we just need the fixture for safety.
-    # The real patching happens at module level below.
-    pass
+def _reset_cherrypy_response():
+    """Reset the response status between tests.
+
+    cherrypy.response is a thread-local shared by every test in the run, so a
+    handler that sets 503 leaves it set for whatever executes next. Without
+    this, a test asserting on a status code passes or fails depending on the
+    order tests happen to run in.
+    """
+    cherrypy.response.status = 200
+    yield
 
 
 _real_open = builtins.open

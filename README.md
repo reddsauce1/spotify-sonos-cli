@@ -90,6 +90,7 @@ dj help
 
 | Endpoint | Description |
 |----------|-------------|
+| `/health` | Sonos + Spotify reachability; 503 if either is down |
 | `/ui` | Web interface |
 | `/chat?message=<text>` | Natural language (Claude AI) |
 | `/search?q=<query>` | Search Spotify |

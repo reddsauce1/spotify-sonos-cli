@@ -21,7 +21,7 @@ Crash-safety plus the ability to tell something broke before a party does.
 - [x] install pytest into venv and run the existing suite (test_server.py, test_sonos_request.py, conftest.py — ~970 lines that have never been executed on this machine). Fix or delete whatever fails. Every task below should land with a test
 - [x] wrap all sp.*() Spotify API calls in try/except for SpotifyException and SpotifyOauthError, return JSON error responses instead of crashing. Affects _do_search, my, like, create_playlist, add_to_playlist, recommend, album_tracks
 - [x] fix Claude API response parsing in call_claude(): validate response structure before indexing result['content'][0]['text'], handle non-JSON Claude output gracefully, add retry on 429 rate limit
-- [ ] add a /health endpoint that checks Sonos connectivity (GET to localhost:5005/zones with 3s timeout), checks Spotify token validity (sp.me() in try/except), and returns JSON {sonos: ok/error, spotify: ok/error, uptime_seconds: N}
+- [x] add a /health endpoint that checks Sonos connectivity (GET to localhost:5005/zones with 3s timeout), checks Spotify token validity (sp.me() in try/except), and returns JSON {sonos: ok/error, spotify: ok/error, uptime_seconds: N}
 - [ ] return proper HTTP status codes: 400 for bad input (missing params, invalid num), 401 for unauthenticated requests, 502 for Sonos/Spotify upstream failures. Use cherrypy.response.status to set codes before returning JSON
 
 ## Phase 2: Structural debt
