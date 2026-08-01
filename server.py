@@ -4,6 +4,7 @@ from spotipy.oauth2 import SpotifyOAuth
 import requests
 import json
 import os
+import secrets
 import urllib.parse
 
 # Load config
@@ -27,12 +28,63 @@ SONOS_URL = f"http://localhost:5005/{SONOS_ROOM}"
 # Claude setup
 ANTHROPIC_API_KEY = config.get('anthropic_api_key', '')
 
-# Password for web UI (optional)
+# Password for web UI (optional -- if unset, the server runs unauthenticated)
+UI_PASSWORD = config.get('ui_password', '')
 
+# Shared secret for the `dj` CLI and other local tooling. The CLI sends it as
+# an X-DJ-Token header. A separate credential from UI_PASSWORD so that handing
+# someone the web password does not also hand them a non-expiring API key.
+CLI_TOKEN = config.get('cli_token', '')
+
+# Session tokens issued by /login. In-memory, so a restart logs everyone out.
+_sessions = set()
+
+# Cap on stored sessions -- each login adds one and nothing removes them, so
+# without this a long-running server leaks memory one token at a time.
+MAX_SESSIONS = 100
+
+# Paths reachable without credentials. Everything else is denied by default,
+# so a new endpoint is protected unless it is deliberately added here.
+PUBLIC_PATHS = {'', '/index', '/ui', '/login'}
 
 # Store last search results (per session for web, global for CLI)
 search_results = {'global': []}
-UI_PASSWORD = config.get('ui_password', '')
+
+
+def _is_authenticated():
+    """True if the current request carries a valid session cookie or CLI token.
+
+    Note: we deliberately do NOT trust the source IP. cloudflared connects to
+    localhost, so tunnelled internet traffic arrives from 127.0.0.1 exactly
+    like the local CLI does -- a loopback exemption would whitelist everyone.
+    """
+    if not UI_PASSWORD:
+        return True
+
+    token = cherrypy.request.headers.get('X-DJ-Token')
+    if token and CLI_TOKEN and secrets.compare_digest(token, CLI_TOKEN):
+        return True
+
+    cookie = cherrypy.request.cookie.get('dj_auth')
+    if cookie and cookie.value in _sessions:
+        return True
+
+    return False
+
+
+def _check_auth():
+    """before_handler hook: reject unauthenticated requests with 401 JSON."""
+    if cherrypy.request.path_info.rstrip('/') in PUBLIC_PATHS or _is_authenticated():
+        return
+
+    cherrypy.response.status = 401
+    cherrypy.response.headers['Content-Type'] = 'application/json'
+    cherrypy.response.body = json.dumps({"error": "Authentication required"}).encode()
+    # Suppress the page handler so the body above is what gets sent.
+    cherrypy.request.handler = None
+
+
+cherrypy.tools.djauth = cherrypy.Tool('before_handler', _check_auth, priority=10)
 
 def get_results(session_id='global'):
     """Get search results for a session"""
@@ -127,6 +179,9 @@ User: "thanks!"
 
 class DJServer:
 
+    # Auth is on for every handler; PUBLIC_PATHS carves out the exceptions.
+    _cp_config = {'tools.djauth.on': True}
+
     @cherrypy.expose
     @cherrypy.tools.json_out()
     def index(self):
@@ -154,11 +209,9 @@ class DJServer:
 
     @cherrypy.expose
     def ui(self):
-        # Check if password is required
-        if UI_PASSWORD:
-            cookie = cherrypy.request.cookie.get('dj_auth')
-            if not cookie or cookie.value != UI_PASSWORD:
-                return '''<!DOCTYPE html>
+        # /ui is public so we can serve the login form rather than a bare 401.
+        if not _is_authenticated():
+            return '''<!DOCTYPE html>
 <html>
 <head>
     <meta charset="UTF-8">
@@ -658,13 +711,20 @@ class DJServer:
 
     @cherrypy.expose
     def login(self, password=None):
-        if password == UI_PASSWORD:
-            cherrypy.response.cookie['dj_auth'] = password
+        # compare_digest avoids leaking the password length/prefix via timing.
+        if password is not None and secrets.compare_digest(password, UI_PASSWORD):
+            # Issue a random session token. The password itself never goes in
+            # the cookie, so a stolen cookie can be revoked by restarting.
+            if len(_sessions) >= MAX_SESSIONS:
+                _sessions.clear()
+            token = secrets.token_hex(32)
+            _sessions.add(token)
+
+            cherrypy.response.cookie['dj_auth'] = token
             cherrypy.response.cookie['dj_auth']['path'] = '/'
             cherrypy.response.cookie['dj_auth']['max-age'] = 86400 * 7
-            raise cherrypy.HTTPRedirect('/ui')
-        else:
-            raise cherrypy.HTTPRedirect('/ui')
+            cherrypy.response.cookie['dj_auth']['httponly'] = True
+        raise cherrypy.HTTPRedirect('/ui')
 
     # ==================== CHAT (Natural Language) ====================
 

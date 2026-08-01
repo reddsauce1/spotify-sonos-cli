@@ -9,8 +9,8 @@ Tunnel, so anything reachable without a cookie is reachable by anyone.
 The other 21 exposed endpoints have no auth at all, including `/chat`, which
 bills the Anthropic API key on every call. Do this phase before anything else.
 
-- [ ] add a _require_auth(self) method or CherryPy before_handler tool that checks the dj_auth cookie. Apply to all exposed API endpoints: search, play, queue, next, pause, resume, skip, previous, volume, nowplaying, getqueue, clearqueue, my, like, help, create_playlist, add_to_playlist, recommend, album_tracks. Return 401 JSON error if not authenticated
-- [ ] replace plaintext password in cookie: generate a random session token on login with secrets.token_hex(), store in a server-side set, put the token (not the password) in the cookie. Validate by checking token membership
+- [x] add a _require_auth(self) method or CherryPy before_handler tool that checks the dj_auth cookie. Apply to all exposed API endpoints: search, play, queue, next, pause, resume, skip, previous, volume, nowplaying, getqueue, clearqueue, my, like, help, create_playlist, add_to_playlist, recommend, album_tracks. Return 401 JSON error if not authenticated
+- [x] replace plaintext password in cookie: generate a random session token on login with secrets.token_hex(), store in a server-side set, put the token (not the password) in the cookie. Validate by checking token membership
 - [ ] add input validation: wrap int(num) in try/except ValueError in all endpoints that accept num parameter, validate Spotify URI format (must start with spotify:) before passing to Sonos, return proper 400 JSON errors
 - [ ] rotate the Spotify OAuth token in .cache — it is stored in plaintext and the refresh token is long-lived, granting full library read/write. Re-run auth on a trusted machine and replace the file
 

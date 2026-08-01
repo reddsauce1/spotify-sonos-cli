@@ -3,68 +3,82 @@
 
 DJ_SERVER="http://localhost:5006"
 
+# The server authenticates every API endpoint. Read the shared token out of
+# config.json at source time; re-source this file if you rotate it.
+DJ_CONFIG="$(dirname "${BASH_SOURCE[0]}")/config.json"
+DJ_TOKEN="$(jq -r '.cli_token // empty' "$DJ_CONFIG" 2>/dev/null)"
+
+if [ -z "$DJ_TOKEN" ]; then
+    echo "dj: warning: no cli_token in $DJ_CONFIG - API calls will return 401" >&2
+fi
+
+# All CLI requests go through here so the token is attached exactly once.
+_dj_curl() {
+    curl -s -H "X-DJ-Token: $DJ_TOKEN" "$@"
+}
+
 dj() {
     case "$1" in
         search)
             local query="${@:2}"
             query="${query// /+}"
-            curl -s "$DJ_SERVER/search?q=$query" | jq -r '
+            _dj_curl "$DJ_SERVER/search?q=$query" | jq -r '
                 "🔍 Results for: \(.query)\n",
                 (.results[] | "\(.num). \(.name)\n   \(.artist) • \(.album)")
             '
             ;;
         play)
-            curl -s "$DJ_SERVER/play?num=$2" | jq -r '
+            _dj_curl "$DJ_SERVER/play?num=$2" | jq -r '
                 if .item then "▶️ Playing: \(.item.name) by \(.item.artist)"
                 elif .error then "❌ \(.error)"
                 else "✓ \(.status)" end
             '
             ;;
         queue|q)
-            curl -s "$DJ_SERVER/queue?num=$2" | jq -r '
+            _dj_curl "$DJ_SERVER/queue?num=$2" | jq -r '
                 if .item then "➕ Queued: \(.item.name) by \(.item.artist)"
                 elif .error then "❌ \(.error)"
                 else "✓ \(.status)" end
             '
             ;;
         next|n)
-            curl -s "$DJ_SERVER/next?num=$2" | jq -r '
+            _dj_curl "$DJ_SERVER/next?num=$2" | jq -r '
                 if .item then "⏭️ Playing next: \(.item.name) by \(.item.artist)"
                 elif .error then "❌ \(.error)"
                 else "✓ \(.status)" end
             '
             ;;
         pause)
-            curl -s "$DJ_SERVER/pause" | jq -r '"⏸️ \(.status)"'
+            _dj_curl "$DJ_SERVER/pause" | jq -r '"⏸️ \(.status)"'
             ;;
         resume|r)
-            curl -s "$DJ_SERVER/resume" | jq -r '"▶️ \(.status)"'
+            _dj_curl "$DJ_SERVER/resume" | jq -r '"▶️ \(.status)"'
             ;;
         skip|s)
-            curl -s "$DJ_SERVER/skip" | jq -r '"⏭️ \(.status)"'
+            _dj_curl "$DJ_SERVER/skip" | jq -r '"⏭️ \(.status)"'
             ;;
         prev)
-            curl -s "$DJ_SERVER/previous" | jq -r '"⏮️ \(.status)"'
+            _dj_curl "$DJ_SERVER/previous" | jq -r '"⏮️ \(.status)"'
             ;;
         vol)
             if [ -z "$2" ]; then
-                curl -s "$DJ_SERVER/volume" | jq -r '"🔊 Volume: \(.volume)"'
+                _dj_curl "$DJ_SERVER/volume" | jq -r '"🔊 Volume: \(.volume)"'
             elif [ "$2" = "up" ]; then
-                curl -s "$DJ_SERVER/volume?change=%2B10" | jq -r '"🔊 \(.status)"'
+                _dj_curl "$DJ_SERVER/volume?change=%2B10" | jq -r '"🔊 \(.status)"'
             elif [ "$2" = "down" ]; then
-                curl -s "$DJ_SERVER/volume?change=-10" | jq -r '"🔉 \(.status)"'
+                _dj_curl "$DJ_SERVER/volume?change=-10" | jq -r '"🔉 \(.status)"'
             else
-                curl -s "$DJ_SERVER/volume?level=$2" | jq -r '"🔊 \(.status)"'
+                _dj_curl "$DJ_SERVER/volume?level=$2" | jq -r '"🔊 \(.status)"'
             fi
             ;;
         np|nowplaying)
-            curl -s "$DJ_SERVER/nowplaying" | jq -r '
+            _dj_curl "$DJ_SERVER/nowplaying" | jq -r '
                 if .title != "Nothing playing" then "🎵 \(.title)\n   \(.artist) • \(.album)\n   Volume: \(.volume) • \(.playbackState)"
                 else "🔇 Nothing playing" end
             '
             ;;
         showqueue|sq)
-            curl -s "$DJ_SERVER/getqueue" | jq -r '
+            _dj_curl "$DJ_SERVER/getqueue" | jq -r '
                 if (.queue | length) > 0 then
                     "📋 Queue (\(.queue | length) tracks):\n",
                     (.queue[:10][] | "  • \(.title) - \(.artist)")
@@ -72,22 +86,22 @@ dj() {
             '
             ;;
         clear)
-            curl -s "$DJ_SERVER/clearqueue" | jq -r '"🗑️ \(.status)"'
+            _dj_curl "$DJ_SERVER/clearqueue" | jq -r '"🗑️ \(.status)"'
             ;;
         like)
-            curl -s "$DJ_SERVER/like" | jq -r '
+            _dj_curl "$DJ_SERVER/like" | jq -r '
                 if .track then "❤️ Liked: \(.track)"
                 else "❌ \(.error)" end
             '
             ;;
         playlists)
-            curl -s "$DJ_SERVER/my/playlists" | jq -r '
+            _dj_curl "$DJ_SERVER/my/playlists" | jq -r '
                 "📚 Your Playlists:\n",
                 (.your_playlists[] | "\(.num). \(.name) (\(.tracks) tracks)")
             '
             ;;
         liked)
-            curl -s "$DJ_SERVER/my/liked" | jq -r '
+            _dj_curl "$DJ_SERVER/my/liked" | jq -r '
                 "❤️ Liked Songs:\n",
                 (.your_liked_songs[] | "\(.num). \(.name) - \(.artist)")
             '
