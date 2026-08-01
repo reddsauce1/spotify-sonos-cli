@@ -175,9 +175,14 @@ First-time auth requires a browser. On your Mac/PC:
 
 ```bash
 pip install spotipy
-python auth.py  # Opens browser for OAuth
+python auth.py  # Opens browser for OAuth, writes .cache
 scp .cache pi@lennypi:~/spotify-server/
 ```
+
+`.cache` holds a long-lived refresh token in plaintext — treat it like a
+password. To **rotate** it, revoke the app first at
+https://www.spotify.com/account/apps/ and then re-run `auth.py`; re-running
+alone issues a new token but leaves the old one valid.
 
 ### 6. Set up services
 
