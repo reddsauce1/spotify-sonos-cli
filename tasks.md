@@ -29,8 +29,8 @@ Crash-safety plus the ability to tell something broke before a party does.
 The first two items are a single edit — extract the HTML and escape it in the
 same pass rather than touching that markup twice.
 
-- [ ] extract the ~500-line HTML/CSS/JS block from the ui() method (lines 222-657) into a new file static/index.html. Configure CherryPy to serve static files from the static/ directory. The ui() method should check auth then serve the file
-- [ ] add an escapeHtml(str) JavaScript function to the web UI that escapes &<>"' characters. Replace all innerHTML assignments that insert dynamic data (track names, artist names, album names, artwork URLs) with either textContent or escaped innerHTML
+- [x] extract the ~500-line HTML/CSS/JS block from the ui() method (lines 222-657) into a new file static/index.html. Configure CherryPy to serve static files from the static/ directory. The ui() method should check auth then serve the file
+- [x] add an escapeHtml(str) JavaScript function to the web UI that escapes &<>"' characters. Replace all innerHTML assignments that insert dynamic data (track names, artist names, album names, artwork URLs) with either textContent or escaped innerHTML
 - [x] extract _get_result_item(self, num, session_id) helper to validate int conversion and bounds checking, replace the 4 duplicated blocks in _do_play, _do_queue, _do_next, and add_to_playlist (done alongside input validation -- the helper *is* the validation)
 - [ ] extract _parse_track_id(self, uri) helper to parse Spotify track ID from URI, replace the 3 duplicated blocks in like, recommend, and album_tracks
 - [ ] consolidate all hardcoded magic numbers into a DEFAULTS dict at top of server.py (claude_timeout, claude_max_tokens, claude_model, search_limit, queue_display_limit, cookie_max_age, server_port). Load overrides from config.json. Use these values everywhere instead of literals
