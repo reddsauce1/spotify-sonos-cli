@@ -5,6 +5,7 @@ from spotipy.exceptions import SpotifyBaseException, SpotifyException
 from spotipy.oauth2 import SpotifyOAuth, SpotifyOauthError
 import requests
 import functools
+import datetime
 import json
 import logging
 import os
@@ -66,6 +67,10 @@ DEFAULTS = {
     # between two ticks is skipped entirely.
     "schedule_tick_seconds": 20,
     "max_schedules": 50,
+    "max_steps_per_schedule": 20,
+    # 12h: enough for a wind-down that starts in the evening and ends after
+    # midnight, without letting an offset drift into ambiguity.
+    "max_step_offset_minutes": 720,
 }
 
 
@@ -210,21 +215,28 @@ def _expire_search_results():
 
 # ==================== SCHEDULES ====================
 #
-# Scheduled actions live in schedules.json next to config.json. A CherryPy
-# Monitor ticks every schedule_tick_seconds and runs whatever is due.
+# A schedule is a *routine*: a trigger time, the days it applies to, and an
+# ordered list of steps, each with a minute offset from the trigger. That is
+# what makes a gradual wake-up expressible -- volume 12 and play at +0, then
+# volume 22 at +10, and so on.
 #
-# Time handling is deliberately local wall-clock: an alarm set for 07:00 fires
-# at 07:00 whatever the clock has done overnight. The consequences of that are
-# DST-shaped -- on the spring-forward day a schedule set inside the skipped
-# hour never fires, and on fall-back the last_fired date stops the repeated
-# hour from firing it twice.
+# Steps are matched against the clock on every tick rather than run by sleeping
+# a thread. A restart between the trigger and a +60m step therefore still runs
+# that step, and no work is lost when the process is replaced mid-routine.
+#
+# Time handling is local wall-clock, so the DST consequences are the usual
+# ones: a trigger inside the skipped hour on the spring-forward day does not
+# fire, and on fall-back the last_fired date stops the repeated hour from
+# firing anything twice.
 
 SCHEDULES_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'schedules.json')
 
 SCHEDULE_TICK_SECONDS = _setting('schedule_tick_seconds')
 MAX_SCHEDULES = _setting('max_schedules')
+MAX_STEPS = _setting('max_steps_per_schedule')
+MAX_OFFSET_MINUTES = _setting('max_step_offset_minutes')
 
-# Actions a schedule may perform, and whether each needs a uri or a volume.
+# Actions a step may perform, and the field each one requires.
 SCHEDULE_ACTIONS = {
     'play': ('uri',),
     'pause': (),
@@ -242,6 +254,25 @@ _schedules_lock = threading.Lock()
 _schedules = []
 
 
+def _migrate_schedule(entry):
+    """Bring a pre-routine entry forward.
+
+    The first version stored one action per schedule, flat. Rather than
+    require a hand edit of schedules.json, fold that shape into a single
+    zero-offset step.
+    """
+    if 'steps' in entry:
+        return entry
+
+    step = {'offset': 0, 'action': entry.pop('action', 'pause')}
+    for field in ('uri', 'volume'):
+        if entry.get(field) is not None:
+            step[field] = entry.pop(field)
+    step['last_fired'] = entry.pop('last_fired', None)
+    entry['steps'] = [step]
+    return entry
+
+
 def _load_schedules():
     """Read schedules.json. A missing or corrupt file is not fatal -- losing
     alarms is better than refusing to serve music."""
@@ -257,7 +288,11 @@ def _load_schedules():
     if not isinstance(data, list):
         log.error("%s is not a list -- continuing with no schedules", SCHEDULES_PATH)
         return []
-    return data
+
+    migrated = [_migrate_schedule(e) for e in data if isinstance(e, dict)]
+    if any('steps' not in e for e in data if isinstance(e, dict)):
+        log.info("Migrated %d schedule(s) to the routine format", len(migrated))
+    return migrated
 
 
 def _save_schedules_locked():
@@ -272,78 +307,110 @@ def _save_schedules_locked():
         log.error("Could not write %s: %s", SCHEDULES_PATH, exc)
 
 
-def _validate_schedule(time_str, action, days, uri, volume, label):
-    """Build a stored schedule from request parameters, or abort with 400."""
-    if not TIME_RE.match(time_str or ''):
-        _bad_request("time must be HH:MM in 24-hour form, e.g. 07:00")
-
+def _validate_step(action, offset=0, uri=None, volume=None):
+    """Build one step of a routine, or abort with 400."""
     if action not in SCHEDULE_ACTIONS:
         _bad_request(f"action must be one of: {', '.join(sorted(SCHEDULE_ACTIONS))}")
 
-    # days: "0,1,2" with 0=Monday. Empty means every day.
-    parsed_days = []
-    for part in (days or '').split(','):
-        part = part.strip()
-        if not part:
-            continue
-        parsed_days.append(_validate_int(part, "days", 0, 6))
-    parsed_days = sorted(set(parsed_days))
-
-    entry = {
-        "id": "sch_" + secrets.token_hex(6),
-        "time": time_str,
-        "action": action,
-        "days": parsed_days,
-        "label": (label or '').strip()[:80],
-        "enabled": True,
-        "last_fired": None,
+    step = {
+        'offset': _validate_int(offset if offset not in (None, '') else 0,
+                                "offset", 0, MAX_OFFSET_MINUTES),
+        'action': action,
+        'last_fired': None,
     }
 
     required = SCHEDULE_ACTIONS[action]
     if 'uri' in required:
-        entry['uri'] = _validate_uri(uri)
+        step['uri'] = _validate_uri(uri)
     if 'volume' in required or volume not in (None, ''):
-        entry['volume'] = _validate_int(volume, "volume", 0, 100)
+        step['volume'] = _validate_int(volume, "volume", 0, 100)
+    return step
 
-    return entry
+
+def _validate_schedule(time_str, days, label):
+    """Build a routine shell (no steps yet), or abort with 400."""
+    if not TIME_RE.match(time_str or ''):
+        _bad_request("time must be HH:MM in 24-hour form, e.g. 07:00")
+
+    # days: "0,1,2" with 0=Monday. Empty means every day.
+    parsed = []
+    for part in (days or '').split(','):
+        part = part.strip()
+        if part:
+            parsed.append(_validate_int(part, "days", 0, 6))
+
+    return {
+        "id": "sch_" + secrets.token_hex(6),
+        "time": time_str,
+        "days": sorted(set(parsed)),
+        "label": (label or '').strip()[:80],
+        "enabled": True,
+        "steps": [],
+    }
 
 
-def _due_schedules(now=None):
-    """Claim everything due right now, marking each fired under the lock.
+def _step_fire_time(trigger, offset):
+    """Return (HH:MM, day_shift) for a step at `offset` minutes past `trigger`.
 
-    Marking before running matters: a Sonos call can take seconds, and the
-    tick is shorter than a minute, so an unclaimed schedule would fire twice.
+    day_shift is 1 when the offset carries the step past midnight, which the
+    caller needs in order to check the *trigger* day rather than the day the
+    step happens to land on.
+    """
+    hour, minute = int(trigger[:2]), int(trigger[3:])
+    day_shift, minutes = divmod(hour * 60 + minute + offset, 1440)
+    return f"{minutes // 60:02d}:{minutes % 60:02d}", day_shift
+
+
+def _due_steps(now=None):
+    """Claim every step due right now, stamping each under the lock.
+
+    Stamping before running matters: a Sonos call takes seconds and the tick
+    is shorter than a minute, so an unclaimed step would fire on every tick
+    until the minute passed.
     """
     now = now or time.localtime()
     hhmm = f"{now.tm_hour:02d}:{now.tm_min:02d}"
-    today = f"{now.tm_year:04d}-{now.tm_mon:02d}-{now.tm_mday:02d}"
+    today = datetime.date(now.tm_year, now.tm_mon, now.tm_mday)
 
     claimed = []
     with _schedules_lock:
         for entry in _schedules:
             if not entry.get('enabled', True):
                 continue
-            if entry.get('time') != hhmm:
+            trigger = entry.get('time', '')
+            if not TIME_RE.match(trigger):
                 continue
-            days = entry.get('days') or list(range(7))
-            if now.tm_wday not in days:
-                continue
-            if entry.get('last_fired') == today:
-                continue
-            entry['last_fired'] = today
-            claimed.append(dict(entry))
+
+            for step in entry.get('steps', []):
+                fire_at, day_shift = _step_fire_time(trigger, step.get('offset', 0))
+                if fire_at != hhmm:
+                    continue
+
+                # A step that wrapped past midnight belongs to the previous
+                # day's run, so both the weekday filter and the fired-stamp
+                # key off the trigger date rather than today's.
+                trigger_date = today - datetime.timedelta(days=day_shift)
+                days = entry.get('days') or list(range(7))
+                if trigger_date.weekday() not in days:
+                    continue
+                if step.get('last_fired') == trigger_date.isoformat():
+                    continue
+
+                step['last_fired'] = trigger_date.isoformat()
+                claimed.append({**step, 'label': entry.get('label') or entry.get('id')})
+
         if claimed:
             _save_schedules_locked()
     return claimed
 
 
 def _fire_schedule(dj, entry):
-    """Run one schedule. Never raises -- one bad entry must not stop the rest."""
+    """Run one step. Never raises -- one bad step must not stop the rest."""
     action = entry.get('action')
     label = entry.get('label') or action
     try:
         if action == 'play':
-            # Volume first, so a morning alarm cannot blast at whatever level
+            # Volume before play, so a wake-up cannot blast at whatever level
             # last night ended on.
             if entry.get('volume') is not None:
                 dj._do_volume(level=entry['volume'])
@@ -375,15 +442,16 @@ def _fire_schedule(dj, entry):
 
 def run_due_schedules(dj):
     """Scheduler tick. Wrapped so an unexpected error cannot kill the Monitor
-    thread and silently stop every future alarm."""
+    thread and silently stop every future routine."""
     try:
-        for entry in _due_schedules():
-            _fire_schedule(dj, entry)
+        for step in _due_steps():
+            _fire_schedule(dj, step)
     except Exception as exc:
         log.error("Scheduler tick failed: %s: %s", type(exc).__name__, exc)
 
 
 _schedules = _load_schedules()
+
 
 
 def _is_authenticated():
@@ -827,18 +895,62 @@ class DJServer:
     @cherrypy.expose
     @cherrypy.tools.json_out()
     @cherrypy.tools.allow(methods=['POST'])
-    def schedule_add(self, time=None, action=None, days=None,
-                     uri=None, volume=None, label=None):
-        """Create a schedule. POST-only: it mutates state."""
-        entry = _validate_schedule(time, action, days, uri, volume, label)
+    def schedule_add(self, time=None, days=None, label=None,
+                     action=None, uri=None, volume=None, offset=None):
+        """Create a routine, optionally with its first step.
+
+        Allowing a step inline keeps the common one-action case a single
+        request; extra steps go through schedule_step_add.
+        """
+        entry = _validate_schedule(time, days, label)
+        if action:
+            entry['steps'].append(_validate_step(action, offset, uri, volume))
+
         with _schedules_lock:
             if len(_schedules) >= MAX_SCHEDULES:
                 _bad_request(f"at most {MAX_SCHEDULES} schedules")
             _schedules.append(entry)
             _save_schedules_locked()
-        log.info("Schedule added: %s %s %s", entry['time'], entry['action'],
-                 entry.get('label', ''))
+        log.info("Schedule added: %s %s (%d step(s))",
+                 entry['time'], entry.get('label', ''), len(entry['steps']))
         return {"status": "added", "schedule": entry}
+
+    @cherrypy.expose
+    @cherrypy.tools.json_out()
+    @cherrypy.tools.allow(methods=['POST'])
+    def schedule_step_add(self, id=None, action=None, offset=None,
+                          uri=None, volume=None):
+        """Append a step, keeping the routine ordered by offset."""
+        step = _validate_step(action, offset, uri, volume)
+        with _schedules_lock:
+            entry = next((e for e in _schedules if e.get('id') == id), None)
+            if entry is None:
+                _bad_request(f"no schedule with id {id!r}")
+            if len(entry.get('steps', [])) >= MAX_STEPS:
+                _bad_request(f"at most {MAX_STEPS} steps per schedule")
+            entry.setdefault('steps', []).append(step)
+            entry['steps'].sort(key=lambda s: s.get('offset', 0))
+            _save_schedules_locked()
+            result = dict(entry)
+        log.info("Step added to %s: +%dm %s", id, step['offset'], step['action'])
+        return {"status": "added", "schedule": result}
+
+    @cherrypy.expose
+    @cherrypy.tools.json_out()
+    @cherrypy.tools.allow(methods=['POST'])
+    def schedule_step_delete(self, id=None, index=None):
+        with _schedules_lock:
+            entry = next((e for e in _schedules if e.get('id') == id), None)
+            if entry is None:
+                _bad_request(f"no schedule with id {id!r}")
+            steps = entry.get('steps', [])
+            position = _validate_int(index, "index", 0, max(len(steps) - 1, 0))
+            if not steps:
+                _bad_request("schedule has no steps")
+            steps.pop(position)
+            _save_schedules_locked()
+            result = dict(entry)
+        return {"status": "deleted", "schedule": result}
 
     @cherrypy.expose
     @cherrypy.tools.json_out()
@@ -871,17 +983,20 @@ class DJServer:
     @cherrypy.tools.json_out()
     @cherrypy.tools.allow(methods=['POST'])
     def schedule_run(self, id=None):
-        """Run a schedule now, without waiting for its time.
+        """Run every step of a routine now, ignoring offsets.
 
-        Testing an alarm by waiting until tomorrow morning is a poor feedback
-        loop; this makes a misconfigured uri or volume obvious immediately.
+        Waiting until tomorrow morning to discover a wrong playlist URI is a
+        poor feedback loop. Offsets are skipped deliberately -- nobody wants
+        to sit through a 60-minute fade to test it.
         """
         with _schedules_lock:
             entry = next((dict(e) for e in _schedules if e.get('id') == id), None)
         if entry is None:
             _bad_request(f"no schedule with id {id!r}")
-        _fire_schedule(self, entry)
-        return {"status": "ran", "id": id}
+        label = entry.get('label') or entry.get('id')
+        for step in entry.get('steps', []):
+            _fire_schedule(self, {**step, 'label': label})
+        return {"status": "ran", "id": id, "steps": len(entry.get('steps', []))}
 
     # ==================== CHAT (Natural Language) ====================
 

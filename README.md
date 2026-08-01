@@ -93,10 +93,12 @@ dj help
 |----------|-------------|
 | `/health` | Sonos + Spotify reachability; 503 if either is down |
 | `/schedules` | List scheduled actions |
-| `/schedule_add` | Create one (POST) |
+| `/schedule_add` | Create a routine, optionally with its first step (POST) |
+| `/schedule_step_add` | Append a step (POST) |
+| `/schedule_step_delete` | Remove a step by index (POST) |
 | `/schedule_delete` | Remove by id (POST) |
 | `/schedule_toggle` | Enable/disable by id (POST) |
-| `/schedule_run` | Run one immediately, for testing (POST) |
+| `/schedule_run` | Run every step now, ignoring offsets (POST) |
 | `/ui` | Web interface |
 | `/chat?message=<text>` | Natural language (Claude AI) |
 | `/search?q=<query>` | Search Spotify |
@@ -401,25 +403,52 @@ request by address alone — exempting localhost would expose everything.
 
 ## Schedules
 
-Open **⏰ Scheduled actions** in the web UI to run any DJ action on a recurring
-time — most usefully waking up to a playlist.
+Open **⏰ Scheduled actions** in the web UI. A schedule is a *routine*: a
+trigger time, the days it runs, and an ordered list of steps, each with a
+minute offset from the trigger. That is what makes a gradual wake-up
+expressible:
 
-Each entry has a time (24-hour, local), the days it applies to (none selected
-means every day), an action, and optionally a volume. For `play`, **the volume
-is set before playback starts**, so a morning alarm cannot blast at whatever
-level last night ended on. The ⚡ button runs an entry immediately, so you can
-check a playlist URI works without waiting until 7am.
+```
+ WEEKDAYS ─────────────────────────────────
+  07:00   Weekday Wake-up               🔔 ⚡ 🗑
+     +0m  🔊  volume 12
+     +0m  ▶   play  spotify:playlist:37i9…
+    +10m  🔊  volume 22
+    +25m  🔊  volume 32
+    +60m  ⏸   pause
+```
 
-Schedules persist to `schedules.json` and survive restarts. A CherryPy Monitor
-checks every 20 seconds and matches on the exact minute, which means a server
-that was down at 07:00 and comes back at 09:30 will **not** fire the alarm late.
+Actions: `play`, `pause`, `resume`, `skip`, `previous`, `volume`, `clearqueue`.
+For `play`, a volume on the same step is applied **before** playback starts, so
+an alarm cannot blast at whatever level last night ended on.
 
-Times are local wall-clock, so the DST consequences are the usual ones: an
-entry inside the skipped hour on the spring-forward day does not fire, and on
-fall-back the repeated hour cannot fire it twice.
+The ⚡ button runs every step immediately, ignoring offsets — so you can check a
+playlist URI works without sitting through a 60-minute fade.
+
+### How it behaves
+
+Steps are matched against the clock on every tick rather than run by a sleeping
+thread. Two things follow from that:
+
+- **A restart mid-routine loses nothing.** If the server is replaced between the
+  07:00 trigger and the +60m step, that step still fires at 08:00.
+- **A late start does not fire a missed alarm.** A server that was down at 07:00
+  and comes back at 09:30 skips it, because steps match on the exact minute.
+
+Offsets may cross midnight — a 23:50 wind-down with a +30m step fires at 00:20.
+That step still belongs to the *trigger* day, so a Friday-only routine runs its
+00:20 step on Saturday morning.
+
+Times are local wall-clock, so DST behaves as you would expect: a trigger inside
+the skipped hour on the spring-forward day does not fire, and on fall-back the
+repeated hour cannot fire anything twice.
+
+Routines live in `schedules.json` and survive restarts. Entries written by the
+first version (one flat action per schedule) are migrated to a single
+zero-offset step automatically.
 
 To get a playlist URI: right-click a playlist in Spotify → Share → Copy Spotify
-URI, or use `dj playlists` and take the `uri` field.
+URI, or run `dj playlists` and take the `uri` field.
 
 ## Project Structure
 

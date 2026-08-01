@@ -187,6 +187,40 @@
         .sched-item button {
             background: none; border: none; font-size: 17px; cursor: pointer; padding: 4px;
         }
+
+        .sched-group {
+            font-size: 11px; letter-spacing: 1.5px; color: #777;
+            margin: 18px 0 6px; padding-bottom: 4px;
+            border-bottom: 1px solid rgba(255,255,255,0.08);
+        }
+        .sched-routine {
+            padding: 10px 0; border-bottom: 1px solid rgba(255,255,255,0.06);
+        }
+        .sched-head { display: flex; align-items: center; gap: 10px; }
+        .sched-title { flex: 1; }
+        .sched-title .name { font-size: 15px; }
+        .sched-steps { margin: 6px 0 0 10px; }
+        .sched-step {
+            display: flex; align-items: center; gap: 8px;
+            font-size: 13px; color: #aaa; padding: 3px 0;
+        }
+        .sched-step .off {
+            min-width: 46px; text-align: right; color: #666;
+            font-variant-numeric: tabular-nums;
+        }
+        .sched-step .what { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .sched-addstep { display: none; margin: 8px 0 4px 10px; }
+        .sched-addstep.open { display: grid; grid-template-columns: repeat(2, 1fr); gap: 6px; }
+        .sched-addstep input, .sched-addstep select {
+            padding: 8px; border-radius: 6px; font-size: 14px;
+            border: 1px solid rgba(255,255,255,0.15);
+            background: rgba(0,0,0,0.25); color: #eee;
+        }
+        .sched-addstep .full { grid-column: 1 / -1; }
+        .link-btn {
+            background: none; border: none; color: #1db954;
+            font-size: 13px; cursor: pointer; padding: 4px 10px;
+        }
     </style>
 </head>
 <body>
@@ -244,6 +278,8 @@
     <div class="sched-panel" id="sched-panel">
         <div class="sched-form">
             <input type="time" id="sched-time" value="07:00">
+            <input type="text" id="sched-label" placeholder="name, e.g. Wake-up">
+            <div class="sched-days" id="sched-days"></div>
             <select id="sched-action" onchange="schedActionChanged()">
                 <option value="play">▶️ Play</option>
                 <option value="pause">⏸ Pause</option>
@@ -253,11 +289,9 @@
                 <option value="volume">🔊 Set volume</option>
                 <option value="clearqueue">🗑 Clear queue</option>
             </select>
-            <input class="full" type="text" id="sched-uri" placeholder="spotify:playlist:... (for Play)">
-            <input type="number" id="sched-volume" min="0" max="100" placeholder="volume (optional)">
-            <input type="text" id="sched-label" placeholder="label, e.g. Morning">
-            <div class="sched-days" id="sched-days"></div>
-            <button class="quick-btn full" onclick="addSchedule()">Add schedule</button>
+            <input type="number" id="sched-volume" min="0" max="100" placeholder="volume">
+            <input class="full" type="text" id="sched-uri" placeholder="spotify:playlist:…">
+            <button class="quick-btn full" onclick="addSchedule()">Create routine</button>
         </div>
         <div id="sched-list"></div>
     </div>
@@ -509,6 +543,10 @@
 
         // ---- Schedules ----
         const DAY_NAMES = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+        const ACTION_ICON = {
+            play: '▶', pause: '⏸', resume: '▶', skip: '⏭',
+            previous: '⏮', volume: '🔊', clearqueue: '🗑',
+        };
 
         function buildDayPicker() {
             document.getElementById('sched-days').innerHTML = DAY_NAMES.map((d, i) =>
@@ -525,13 +563,71 @@
 
         function schedActionChanged() {
             const action = document.getElementById('sched-action').value;
-            document.getElementById('sched-uri').style.display =
-                action === 'play' ? '' : 'none';
+            document.getElementById('sched-uri').style.display = action === 'play' ? '' : 'none';
+            document.getElementById('sched-volume').style.display =
+                (action === 'play' || action === 'volume') ? '' : 'none';
         }
 
-        function describeDays(days) {
-            if (!days || days.length === 0 || days.length === 7) return 'every day';
-            return days.map(d => DAY_NAMES[d]).join(' ');
+        // Routines are grouped by the days they run, because that is how you
+        // think about them -- "my weekday mornings", not "the 07:00 one".
+        function groupName(days) {
+            const key = (days || []).join(',');
+            if (key === '' || key === '0,1,2,3,4,5,6') return 'EVERY DAY';
+            if (key === '0,1,2,3,4') return 'WEEKDAYS';
+            if (key === '5,6') return 'WEEKENDS';
+            return days.map(d => DAY_NAMES[d]).join(' ').toUpperCase();
+        }
+
+        function describeStep(step) {
+            const icon = ACTION_ICON[step.action] || '•';
+            let what = step.action;
+            if (step.action === 'play') {
+                what = 'play ' + (step.uri || '');
+                if (step.volume !== undefined && step.volume !== null) {
+                    what += '  · vol ' + step.volume;
+                }
+            } else if (step.action === 'volume') {
+                what = 'volume ' + step.volume;
+            }
+            return icon + '  ' + what;
+        }
+
+        function renderRoutine(s) {
+            const steps = (s.steps || []).map((step, i) =>
+                '<div class="sched-step">' +
+                    '<span class="off">+' + escapeHtml(String(step.offset || 0)) + 'm</span>' +
+                    '<span class="what">' + escapeHtml(describeStep(step)) + '</span>' +
+                    '<button class="link-btn" title="Remove step" ' +
+                        'onclick="deleteStep(\'' + s.id + '\',' + i + ')">✕</button>' +
+                '</div>'
+            ).join('');
+
+            const stepForm =
+                '<div class="sched-addstep" id="addstep-' + s.id + '">' +
+                    '<input type="number" min="0" placeholder="+min" id="stepoff-' + s.id + '" value="0">' +
+                    '<select id="stepact-' + s.id + '">' +
+                        Object.keys(ACTION_ICON).map(a =>
+                            '<option value="' + a + '">' + ACTION_ICON[a] + ' ' + a + '</option>').join('') +
+                    '</select>' +
+                    '<input type="number" min="0" max="100" placeholder="volume" id="stepvol-' + s.id + '">' +
+                    '<input type="text" placeholder="spotify:…" id="stepuri-' + s.id + '">' +
+                    '<button class="quick-btn full" onclick="addStep(\'' + s.id + '\')">Add step</button>' +
+                '</div>';
+
+            return '<div class="sched-routine' + (s.enabled ? '' : ' sched-off') + '">' +
+                '<div class="sched-head">' +
+                    '<div class="sched-when">' + escapeHtml(s.time) + '</div>' +
+                    '<div class="sched-title"><div class="name">' +
+                        escapeHtml(s.label || '(unnamed)') + '</div></div>' +
+                    '<button title="Enable/disable" onclick="toggleSchedule(\'' + s.id + '\')">' +
+                        (s.enabled ? '🔔' : '🔕') + '</button>' +
+                    '<button title="Run now" onclick="runSchedule(\'' + s.id + '\')">⚡</button>' +
+                    '<button title="Delete" onclick="deleteSchedule(\'' + s.id + '\')">🗑</button>' +
+                '</div>' +
+                '<div class="sched-steps">' + steps +
+                    '<button class="link-btn" onclick="toggleStepForm(\'' + s.id + '\')">+ step</button>' +
+                '</div>' + stepForm +
+            '</div>';
         }
 
         function loadSchedules() {
@@ -544,22 +640,21 @@
                             '<div class="sched-meta" style="padding:12px">Nothing scheduled yet.</div>';
                         return;
                     }
-                    document.getElementById('sched-list').innerHTML = list.map(s => {
-                        const bits = [s.action];
-                        if (s.volume !== undefined && s.volume !== null) bits.push('vol ' + s.volume);
-                        bits.push(describeDays(s.days));
-                        return '<div class="sched-item' + (s.enabled ? '' : ' sched-off') + '">' +
-                            '<div class="sched-when">' + escapeHtml(s.time) + '</div>' +
-                            '<div class="sched-meta">' +
-                                '<div>' + escapeHtml(s.label || s.action) + '</div>' +
-                                '<div>' + escapeHtml(bits.join(' • ')) + '</div>' +
-                            '</div>' +
-                            '<button title="Run now" onclick="runSchedule(\'' + s.id + '\')">⚡</button>' +
-                            '<button title="Enable/disable" onclick="toggleSchedule(\'' + s.id + '\')">' +
-                                (s.enabled ? '🔔' : '🔕') + '</button>' +
-                            '<button title="Delete" onclick="deleteSchedule(\'' + s.id + '\')">🗑</button>' +
-                        '</div>';
-                    }).join('');
+                    const groups = {};
+                    list.forEach(s => {
+                        const g = groupName(s.days);
+                        (groups[g] = groups[g] || []).push(s);
+                    });
+                    const order = ['WEEKDAYS', 'WEEKENDS', 'EVERY DAY'];
+                    const names = Object.keys(groups).sort((a, b) => {
+                        const ia = order.indexOf(a), ib = order.indexOf(b);
+                        return (ia === -1 ? 99 : ia) - (ib === -1 ? 99 : ib);
+                    });
+                    document.getElementById('sched-list').innerHTML = names.map(g =>
+                        '<div class="sched-group">' + escapeHtml(g) + '</div>' +
+                        groups[g].sort((a, b) => a.time.localeCompare(b.time))
+                                 .map(renderRoutine).join('')
+                    ).join('');
                 });
         }
 
@@ -576,18 +671,41 @@
                 .map(c => c.value).join(',');
             const params = new URLSearchParams({
                 time: document.getElementById('sched-time').value,
-                action: document.getElementById('sched-action').value,
                 days: days,
+                label: document.getElementById('sched-label').value.trim(),
+                action: document.getElementById('sched-action').value,
                 uri: document.getElementById('sched-uri').value.trim(),
                 volume: document.getElementById('sched-volume').value,
-                label: document.getElementById('sched-label').value.trim(),
             });
             schedPost('/schedule_add', params.toString()).then(({ok, data}) => {
                 if (!ok) { showToast('❌ ' + (data.error || 'Could not add')); return; }
-                showToast('⏰ Scheduled');
+                showToast('⏰ Routine created');
                 document.getElementById('sched-label').value = '';
                 loadSchedules();
             });
+        }
+
+        function toggleStepForm(id) {
+            document.getElementById('addstep-' + id).classList.toggle('open');
+        }
+
+        function addStep(id) {
+            const params = new URLSearchParams({
+                id: id,
+                offset: document.getElementById('stepoff-' + id).value || '0',
+                action: document.getElementById('stepact-' + id).value,
+                volume: document.getElementById('stepvol-' + id).value,
+                uri: document.getElementById('stepuri-' + id).value.trim(),
+            });
+            schedPost('/schedule_step_add', params.toString()).then(({ok, data}) => {
+                if (!ok) { showToast('❌ ' + (data.error || 'Could not add step')); return; }
+                loadSchedules();
+            });
+        }
+
+        function deleteStep(id, index) {
+            schedPost('/schedule_step_delete', 'id=' + encodeURIComponent(id) + '&index=' + index)
+                .then(() => loadSchedules());
         }
 
         function deleteSchedule(id) {
