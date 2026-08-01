@@ -1,7 +1,9 @@
 import cherrypy
 import spotipy
-from spotipy.oauth2 import SpotifyOAuth
+from spotipy.exceptions import SpotifyBaseException, SpotifyException
+from spotipy.oauth2 import SpotifyOAuth, SpotifyOauthError
 import requests
+import functools
 import json
 import os
 import re
@@ -138,6 +140,47 @@ def _validate_volume_change(change):
     number = _validate_int(change, "change", -100, 100)
     return f"{number:+d}"
 
+
+# ==================== UPSTREAM ERROR HANDLING ====================
+
+
+def _handles_spotify_errors(fn):
+    """Turn spotipy failures into JSON errors instead of an HTML 500.
+
+    Every sp.*() call can fail for reasons that have nothing to do with the
+    request: the cached token expired or was revoked, the account hit a rate
+    limit, a playlist was deleted, or Spotify is simply down. Untrapped, any
+    of those propagates out of the handler and CherryPy renders a 500 HTML
+    page that neither the CLI's jq nor the UI's fetch() can parse.
+    """
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        try:
+            return fn(*args, **kwargs)
+        except SpotifyOauthError as exc:
+            raise cherrypy.HTTPError(
+                502, f"Spotify authorisation failed ({exc}). Re-run auth.py to refresh .cache."
+            )
+        except SpotifyException as exc:
+            status = getattr(exc, 'http_status', None)
+            detail = getattr(exc, 'msg', None) or str(exc)
+            if status == 429:
+                # Surfaced as-is so clients can back off rather than retry.
+                raise cherrypy.HTTPError(429, "Spotify rate limit reached -- try again shortly")
+            if status == 404:
+                raise cherrypy.HTTPError(404, f"Spotify found nothing for that request: {detail}")
+            if status in (401, 403):
+                raise cherrypy.HTTPError(
+                    502, "Spotify rejected the token -- re-run auth.py to re-authorise"
+                )
+            raise cherrypy.HTTPError(502, f"Spotify error: {detail}")
+        except SpotifyBaseException as exc:
+            raise cherrypy.HTTPError(502, f"Spotify error: {exc}")
+        except requests.exceptions.RequestException as exc:
+            raise cherrypy.HTTPError(502, f"Could not reach Spotify: {exc}")
+
+    return wrapper
+
 def get_results(session_id='global'):
     """Get search results for a session"""
     return search_results.get(session_id, [])
@@ -236,8 +279,11 @@ class DJServer:
     _cp_config = {
         'tools.djauth.on': True,
         'error_page.400': _json_error_page,
+        'error_page.401': _json_error_page,
         'error_page.404': _json_error_page,
+        'error_page.429': _json_error_page,
         'error_page.500': _json_error_page,
+        'error_page.502': _json_error_page,
     }
 
     @cherrypy.expose
@@ -907,6 +953,7 @@ class DJServer:
         number = _validate_int(num, "num", 1, len(results))
         return results[number - 1]
 
+    @_handles_spotify_errors
     def _do_search(self, q, type="track", limit=5, session_id='global'):
         results = sp.search(q=q, type=type, limit=_validate_int(limit, "limit", 1, 50))
         output = []
@@ -1118,6 +1165,7 @@ class DJServer:
 
     @cherrypy.expose
     @cherrypy.tools.json_out()
+    @_handles_spotify_errors
     def my(self, action=None, limit=20, offset=0):
         limit = _validate_int(limit, "limit", 1, 50)
         offset = _validate_int(offset, "offset", 0, 100000)
@@ -1155,6 +1203,7 @@ class DJServer:
 
     @cherrypy.expose
     @cherrypy.tools.json_out()
+    @_handles_spotify_errors
     def like(self):
         state = self._sonos_request("state")
         if "error" in state:
@@ -1202,6 +1251,7 @@ class DJServer:
 
     @cherrypy.expose
     @cherrypy.tools.json_out()
+    @_handles_spotify_errors
     def create_playlist(self, name=None):
         if not name:
             _bad_request("Provide playlist name: /create_playlist?name=My%20Playlist")
@@ -1217,6 +1267,7 @@ class DJServer:
     
     @cherrypy.expose
     @cherrypy.tools.json_out()
+    @_handles_spotify_errors
     def add_to_playlist(self, playlist_id=None, num=None, uri=None):
         if not playlist_id:
             _bad_request("Provide playlist_id")
@@ -1234,6 +1285,7 @@ class DJServer:
 
     @cherrypy.expose
     @cherrypy.tools.json_out()
+    @_handles_spotify_errors
     def recommend(self, based_on=None, limit=10):
         """Get top tracks from the current artist"""
         
@@ -1277,6 +1329,7 @@ class DJServer:
 
     @cherrypy.expose
     @cherrypy.tools.json_out()
+    @_handles_spotify_errors
     def album_tracks(self, based_on=None):
         """Get all tracks from the current song's album"""
         

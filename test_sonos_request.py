@@ -1,87 +1,25 @@
-"""Tests for DJServer._sonos_request helper and all refactored Sonos methods."""
+"""Tests for DJServer._sonos_request helper and all refactored Sonos methods.
 
-import json
-import sys
-import types
+server.py is imported by conftest.py with spotipy and the config file already
+mocked, so this module just uses that instance. It used to install its own
+cherrypy/spotipy stubs into sys.modules, which leaked into every test module
+collected after it -- exception classes imported elsewhere no longer matched
+the ones server.py had bound, so `except SpotifyException` silently stopped
+matching.
+"""
+
 import unittest
 from unittest.mock import MagicMock, patch
 
 import requests
 
-# ---------------------------------------------------------------------------
-# Stub heavy third-party imports so we can import server.py without them
-# being configured (no config.json, no Spotify OAuth, no CherryPy app).
-# ---------------------------------------------------------------------------
-
-# 1. Provide a minimal cherrypy stub
-cherrypy_stub = types.ModuleType("cherrypy")
-cherrypy_stub.expose = lambda f: f  # decorator that does nothing
-cherrypy_stub.HTTPRedirect = Exception
-
-tools_stub = types.SimpleNamespace()
-json_out_ns = types.SimpleNamespace()
-json_out_ns.json_out = lambda: (lambda f: f)
-tools_stub.json_out = json_out_ns.json_out
-cherrypy_stub.tools = tools_stub
-cherrypy_stub.request = types.SimpleNamespace(cookie={})
-cherrypy_stub.response = types.SimpleNamespace(cookie={})
-cherrypy_stub.config = types.SimpleNamespace(update=lambda *a, **k: None)
-cherrypy_stub.quickstart = lambda *a, **k: None
-
-
-class _StubHTTPError(Exception):
-    """Stands in for cherrypy.HTTPError when the real package is stubbed out."""
-
-    def __init__(self, status=500, message=None):
-        self.status = status
-        self.message = message
-        super().__init__(f"{status}: {message}")
-
-
-cherrypy_stub.HTTPError = _StubHTTPError
-cherrypy_stub.Tool = lambda *a, **k: None
-cherrypy_stub.headers = {}
-
-sys.modules["cherrypy"] = cherrypy_stub
-
-# 2. Provide a minimal spotipy stub
-spotipy_stub = types.ModuleType("spotipy")
-spotipy_stub.Spotify = MagicMock
-oauth_mod = types.ModuleType("spotipy.oauth2")
-oauth_mod.SpotifyOAuth = MagicMock
-spotipy_stub.oauth2 = oauth_mod
-sys.modules["spotipy"] = spotipy_stub
-sys.modules["spotipy.oauth2"] = oauth_mod
-
-# 3. Patch open so config.json load succeeds
-_fake_config = json.dumps({
-    "client_id": "fake",
-    "client_secret": "fake",
-    "sonos_room": "TestRoom",
-    "anthropic_api_key": "",
-})
-
-import builtins
-
-_real_open = builtins.open
-
-
-def _patched_open(path, *args, **kwargs):
-    if isinstance(path, str) and path.endswith("config.json"):
-        from io import StringIO
-        return StringIO(_fake_config)
-    return _real_open(path, *args, **kwargs)
-
-
-with patch("builtins.open", _patched_open):
-    import server  # noqa: E402
+import server
 
 # Grab a DJServer instance for testing
 dj = server.DJServer()
 
-# Resolve against the cherrypy `server` actually bound to, which is the real
-# package when running under pytest (conftest imports server first) and the
-# stub above when this file is run standalone.
+# Resolve against the cherrypy that server.py is actually bound to, so these
+# assertions cannot drift from the class the code raises.
 BadRequest = server.cherrypy.HTTPError
 
 
