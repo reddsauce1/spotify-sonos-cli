@@ -283,6 +283,37 @@ curl "http://localhost:5006/search?q=beatles"
 ### Token expired
 Re-run auth.py on your Mac and copy the new `.cache` file to the Pi.
 
+## Development
+
+### Running tests
+
+```bash
+pip install pytest
+python -m pytest -q
+```
+
+The suite mocks Spotify, Sonos and CherryPy, so it needs no network, no
+credentials and no running server. `conftest.py` feeds `server.py` a fake
+config at import time.
+
+## Authentication
+
+Every API endpoint requires credentials; only `/`, `/ui` and `/login` are
+public. Set `ui_password` in `config.json` to enable this — if it is empty the
+server runs completely open.
+
+There are two ways to authenticate:
+
+- **Browser** — `/login` exchanges the password for a random session token
+  stored server-side and set as an httponly cookie. Restarting the server
+  invalidates all sessions.
+- **CLI / scripts** — send the `cli_token` from `config.json` as an
+  `X-DJ-Token` header. `dj_aliases.sh` does this for you.
+
+Note that auth is *not* based on source IP. `cloudflared` connects over
+loopback, so tunnelled internet traffic is indistinguishable from a local
+request by address alone — exempting localhost would expose everything.
+
 ## Project Structure
 
 ```

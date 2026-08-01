@@ -28,6 +28,20 @@ cherrypy_stub.response = types.SimpleNamespace(cookie={})
 cherrypy_stub.config = types.SimpleNamespace(update=lambda *a, **k: None)
 cherrypy_stub.quickstart = lambda *a, **k: None
 
+
+class _StubHTTPError(Exception):
+    """Stands in for cherrypy.HTTPError when the real package is stubbed out."""
+
+    def __init__(self, status=500, message=None):
+        self.status = status
+        self.message = message
+        super().__init__(f"{status}: {message}")
+
+
+cherrypy_stub.HTTPError = _StubHTTPError
+cherrypy_stub.Tool = lambda *a, **k: None
+cherrypy_stub.headers = {}
+
 sys.modules["cherrypy"] = cherrypy_stub
 
 # 2. Provide a minimal spotipy stub
@@ -64,6 +78,11 @@ with patch("builtins.open", _patched_open):
 
 # Grab a DJServer instance for testing
 dj = server.DJServer()
+
+# Resolve against the cherrypy `server` actually bound to, which is the real
+# package when running under pytest (conftest imports server first) and the
+# stub above when this file is run standalone.
+BadRequest = server.cherrypy.HTTPError
 
 
 # ---------------------------------------------------------------------------
@@ -231,8 +250,16 @@ class TestDoPlay(unittest.TestCase):
     @patch.object(dj, "_sonos_request")
     def test_play_by_uri_error(self, mock_req):
         mock_req.return_value = {"error": "Sonos request timed out", "endpoint": "spotify/now/x"}
-        result = dj._do_play(uri="x")
+        result = dj._do_play(uri="spotify:track:aaa")
         self.assertIn("error", result)
+
+    def test_play_rejects_traversal_uri(self):
+        """A uri that could escape the room prefix never reaches Sonos."""
+        with patch.object(dj, "_sonos_request") as mock_req:
+            with self.assertRaises(BadRequest) as ctx:
+                dj._do_play(uri="../../Bedroom/pause")
+        self.assertEqual(ctx.exception.status, 400)
+        mock_req.assert_not_called()
 
     @patch.object(dj, "_sonos_request")
     def test_play_by_num_success(self, mock_req):
@@ -255,13 +282,14 @@ class TestDoPlay(unittest.TestCase):
 
     def test_play_invalid_num(self):
         server.set_results([], "global")
-        result = dj._do_play(num=5)
-        self.assertIn("error", result)
-        self.assertIn("Invalid selection", result["error"])
+        with self.assertRaises(BadRequest) as ctx:
+            dj._do_play(num=5)
+        self.assertEqual(ctx.exception.status, 400)
 
     def test_play_no_args(self):
-        result = dj._do_play()
-        self.assertIn("error", result)
+        with self.assertRaises(BadRequest) as ctx:
+            dj._do_play()
+        self.assertEqual(ctx.exception.status, 400)
 
 
 # ===================================================================
@@ -280,7 +308,7 @@ class TestDoQueue(unittest.TestCase):
     @patch.object(dj, "_sonos_request")
     def test_queue_by_uri_error(self, mock_req):
         mock_req.return_value = {"error": "Sonos request timed out", "endpoint": "x"}
-        result = dj._do_queue(uri="x")
+        result = dj._do_queue(uri="spotify:track:aaa")
         self.assertIn("error", result)
 
     @patch.object(dj, "_sonos_request")
@@ -294,8 +322,9 @@ class TestDoQueue(unittest.TestCase):
         self.assertEqual(result["item"]["name"], "Song B")
 
     def test_queue_no_args(self):
-        result = dj._do_queue()
-        self.assertIn("error", result)
+        with self.assertRaises(BadRequest) as ctx:
+            dj._do_queue()
+        self.assertEqual(ctx.exception.status, 400)
 
 
 # ===================================================================
@@ -314,7 +343,7 @@ class TestDoNext(unittest.TestCase):
     @patch.object(dj, "_sonos_request")
     def test_next_by_uri_error(self, mock_req):
         mock_req.return_value = {"error": "Sonos request timed out", "endpoint": "x"}
-        result = dj._do_next(uri="x")
+        result = dj._do_next(uri="spotify:track:aaa")
         self.assertIn("error", result)
 
     @patch.object(dj, "_sonos_request")
@@ -328,8 +357,9 @@ class TestDoNext(unittest.TestCase):
         self.assertEqual(result["item"]["name"], "Song C")
 
     def test_next_no_args(self):
-        result = dj._do_next()
-        self.assertIn("error", result)
+        with self.assertRaises(BadRequest) as ctx:
+            dj._do_next()
+        self.assertEqual(ctx.exception.status, 400)
 
 
 # ===================================================================

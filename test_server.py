@@ -1,7 +1,12 @@
 """Tests for DJServer._sonos_request helper and all _do_* methods that use it."""
+import cherrypy
 import pytest
 import requests
 from unittest.mock import patch, MagicMock
+
+# Bad input now aborts with a 400 instead of returning an error dict, so
+# these tests assert on the raised HTTPError.
+BadRequest = cherrypy.HTTPError
 
 
 # ======================== _sonos_request TESTS ========================
@@ -126,9 +131,17 @@ class TestDoPlay:
         """Play by URI propagates error from _sonos_request."""
         err = {"error": "Sonos request timed out", "endpoint": "spotify/now/x"}
         with patch.object(dj, "_sonos_request", return_value=err):
-            result = dj._do_play(uri="x")
+            result = dj._do_play(uri="spotify:track:aaa")
 
         assert "error" in result
+
+    def test_play_rejects_non_spotify_uri(self, dj):
+        """A uri that could traverse the Sonos path is refused before the request."""
+        with patch.object(dj, "_sonos_request") as mock_req:
+            with pytest.raises(BadRequest) as exc:
+                dj._do_play(uri="../../Bedroom/pause")
+        assert exc.value.status == 400
+        mock_req.assert_not_called()
 
     def test_play_by_num_success(self, dj, server_mod):
         """Play by num looks up search results and plays the track."""
@@ -156,18 +169,28 @@ class TestDoPlay:
         assert result == err
 
     def test_play_num_out_of_range(self, dj, server_mod):
-        """Num out of range returns error."""
+        """Num out of range aborts with 400."""
         server_mod.set_results(
-            [{"num": 1, "name": "Song", "artist": "A", "uri": "u"}], "global"
+            [{"num": 1, "name": "Song", "artist": "A", "uri": "spotify:track:aaa"}], "global"
         )
-        result = dj._do_play(num=5)
-        assert "error" in result
-        assert "Invalid selection" in result["error"]
+        with pytest.raises(BadRequest) as exc:
+            dj._do_play(num=5)
+        assert exc.value.status == 400
+
+    def test_play_num_not_a_number(self, dj, server_mod):
+        """A non-numeric num aborts with 400 rather than raising ValueError."""
+        server_mod.set_results(
+            [{"num": 1, "name": "Song", "artist": "A", "uri": "spotify:track:aaa"}], "global"
+        )
+        with pytest.raises(BadRequest) as exc:
+            dj._do_play(num="abc")
+        assert exc.value.status == 400
 
     def test_play_no_args(self, dj):
-        """No num or uri returns error."""
-        result = dj._do_play()
-        assert result == {"error": "Provide num or uri"}
+        """No num or uri aborts with 400."""
+        with pytest.raises(BadRequest) as exc:
+            dj._do_play()
+        assert exc.value.status == 400
 
 
 # ======================== _do_queue TESTS ========================
@@ -197,7 +220,7 @@ class TestDoQueue:
 
     def test_queue_error_propagates(self, dj, server_mod):
         server_mod.set_results(
-            [{"num": 1, "name": "T", "artist": "A", "uri": "u"}], "global"
+            [{"num": 1, "name": "T", "artist": "A", "uri": "spotify:track:aaa"}], "global"
         )
         err = {"error": "timeout", "endpoint": "x"}
         with patch.object(dj, "_sonos_request", return_value=err):
@@ -205,8 +228,9 @@ class TestDoQueue:
         assert result == err
 
     def test_queue_no_args(self, dj):
-        result = dj._do_queue()
-        assert result == {"error": "Provide num or uri"}
+        with pytest.raises(BadRequest) as exc:
+            dj._do_queue()
+        assert exc.value.status == 400
 
 
 # ======================== _do_next TESTS ========================
@@ -235,7 +259,7 @@ class TestDoNext:
 
     def test_next_error_propagates(self, dj, server_mod):
         server_mod.set_results(
-            [{"num": 1, "name": "T", "artist": "A", "uri": "u"}], "global"
+            [{"num": 1, "name": "T", "artist": "A", "uri": "spotify:track:aaa"}], "global"
         )
         err = {"error": "conn", "endpoint": "x"}
         with patch.object(dj, "_sonos_request", return_value=err):
@@ -243,8 +267,9 @@ class TestDoNext:
         assert result == err
 
     def test_next_no_args(self, dj):
-        result = dj._do_next()
-        assert result == {"error": "Provide num or uri"}
+        with pytest.raises(BadRequest) as exc:
+            dj._do_next()
+        assert exc.value.status == 400
 
 
 # ======================== _do_pause TESTS ========================

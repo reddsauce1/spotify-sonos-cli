@@ -1,4 +1,6 @@
 """Conftest: patches module-level Spotify/config so server.py can be imported in tests."""
+import builtins
+import io
 import sys
 import json
 from unittest.mock import patch, MagicMock
@@ -24,20 +26,32 @@ def _patch_server_imports(monkeypatch):
     pass
 
 
+_real_open = builtins.open
+
+
+def _fake_open(path, *args, **kwargs):
+    """Serve a fake config.json; pass every other path through to real open().
+
+    Deliberately a plain function rather than a MagicMock. Patching
+    builtins.open with a mock means every open() performed while importing
+    cherrypy and spotipy gets recorded into the mock's call tree, and
+    _increment_mock_call walking that tree turns the import into an
+    effectively infinite hang.
+    """
+    if str(path).endswith("config.json"):
+        return io.StringIO(json.dumps(_FAKE_CONFIG))
+    return _real_open(path, *args, **kwargs)
+
+
 def _import_server():
     """Import server.py with all external dependencies mocked."""
     # Remove cached module if present so patches take effect
     sys.modules.pop("server", None)
 
-    fake_open = MagicMock()
-    fake_open.return_value.__enter__ = lambda s: MagicMock(read=lambda: json.dumps(_FAKE_CONFIG))
-    fake_open.return_value.__exit__ = MagicMock(return_value=False)
-
-    with patch("builtins.open", fake_open):
-        with patch("json.load", return_value=_FAKE_CONFIG):
-            with patch("spotipy.Spotify"):
-                with patch("spotipy.oauth2.SpotifyOAuth"):
-                    import server
+    with patch("builtins.open", _fake_open):
+        with patch("spotipy.Spotify"):
+            with patch("spotipy.oauth2.SpotifyOAuth"):
+                import server
     return server
 
 
