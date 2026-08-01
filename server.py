@@ -648,66 +648,79 @@ class DJServer:
         result = {"message": friendly_message, "action": action}
         
         try:
+            # Every branch records what the helper returned, so the single
+            # check below can catch an upstream failure. Claude's friendly
+            # message is written before the call happens, so a branch that
+            # drops the result reports success for something that never ran.
+            outcome = None
+
             if action == 'search':
                 query = claude_response.get('query', '')
-                search_result = self._do_search(q=query, session_id=session_id)
-                result['results'] = search_result.get('results', [])
+                outcome = self._do_search(q=query, session_id=session_id)
+                result['results'] = outcome.get('results', [])
                 result['message'] = friendly_message + f" Found {len(result['results'])} tracks."
-            
+
             elif action == 'play':
                 num = claude_response.get('num', 1)
-                play_result = self._do_play(num=num, session_id=session_id)
-                if play_result.get('item'):
-                    result['message'] = f"▶️ Now playing: {play_result['item']['name']}"
-            
+                outcome = self._do_play(num=num, session_id=session_id)
+                if outcome.get('item'):
+                    result['message'] = f"▶️ Now playing: {outcome['item']['name']}"
+
             elif action == 'queue':
                 num = claude_response.get('num', 1)
-                queue_result = self._do_queue(num=num, session_id=session_id)
-                if queue_result.get('item'):
-                    result['message'] = f"➕ Queued: {queue_result['item']['name']}"
-            
+                outcome = self._do_queue(num=num, session_id=session_id)
+                if outcome.get('item'):
+                    result['message'] = f"➕ Queued: {outcome['item']['name']}"
+
             elif action == 'next':
                 num = claude_response.get('num', 1)
-                next_result = self._do_next(num=num, session_id=session_id)
-                if next_result.get('item'):
-                    result['message'] = f"⏭️ Playing next: {next_result['item']['name']}"
-            
+                outcome = self._do_next(num=num, session_id=session_id)
+                if outcome.get('item'):
+                    result['message'] = f"⏭️ Playing next: {outcome['item']['name']}"
+
             elif action == 'pause':
-                self._do_pause()
-            
+                outcome = self._do_pause()
+
             elif action == 'resume':
-                self._do_resume()
-            
+                outcome = self._do_resume()
+
             elif action == 'skip':
-                self._do_skip()
-            
+                outcome = self._do_skip()
+
             elif action == 'previous':
-                self._do_previous()
-            
+                outcome = self._do_previous()
+
             elif action == 'volume':
                 level = claude_response.get('level')
                 change = claude_response.get('change')
-                self._do_volume(level=level, change=change)
-            
+                outcome = self._do_volume(level=level, change=change)
+
             elif action == 'nowplaying':
-                np = self._do_nowplaying()
-                if np.get('title'):
-                    result['message'] = f"🎵 {np['title']} by {np['artist']}"
+                outcome = self._do_nowplaying()
+                if outcome.get('title'):
+                    result['message'] = f"🎵 {outcome['title']} by {outcome['artist']}"
                 else:
                     result['message'] = "🔇 Nothing playing"
-            
+
             elif action == 'showqueue':
-                q = self._do_getqueue()
-                queue_list = q.get('queue', [])
+                outcome = self._do_getqueue()
+                queue_list = outcome.get('queue', [])
                 if queue_list:
                     result['message'] = f"📋 Queue has {len(queue_list)} tracks"
                     result['queue'] = queue_list[:10]
                 else:
                     result['message'] = "📭 Queue is empty"
-            
+
             elif action == 'clear':
-                self._do_clearqueue()
+                outcome = self._do_clearqueue()
                 result['message'] = "🗑️ Queue cleared!"
+
+            # The helpers signal upstream failure by returning {"error": ...}.
+            # Replace the optimistic message so the user is not told the music
+            # paused while Sonos was unreachable.
+            if isinstance(outcome, dict) and 'error' in outcome:
+                result['error'] = outcome['error']
+                result['message'] = f"❌ {outcome['error']}"
             
         except Exception as e:
             result['message'] = f"Error: {str(e)}"

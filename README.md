@@ -26,7 +26,7 @@ Internet (url hidden)
     Cloudflare Tunnel
             ↓
 ┌─────────────────────────────────────┐
-│          Raspberry Pi               │
+│      Host (macOS, via launchd)      │
 ├─────────────────────────────────────┤
 │  server.py (port 5006)              │
 │  ├── Web UI (/ui)                   │
@@ -116,7 +116,8 @@ dj help
 
 ## Requirements
 
-- Raspberry Pi (tested on Pi 4)
+- A machine that stays on: macOS (launchd, described here) or Linux (systemd)
+- Python 3.11+ and Node.js
 - Sonos speaker on your network
 - Spotify Premium account
 - Anthropic API key (for Claude integration)
@@ -126,12 +127,23 @@ dj help
 
 ### 1. Install dependencies
 
-```bash
-sudo apt update
-sudo apt install -y nodejs npm python3-pip
+macOS:
 
-pip install spotipy cherrypy anthropic requests --break-system-packages
+```bash
+brew install node python jq
+python3 -m venv venv
+./venv/bin/pip install spotipy cherrypy anthropic requests
 ```
+
+Debian/Raspberry Pi:
+
+```bash
+sudo apt update && sudo apt install -y nodejs npm python3-venv jq
+python3 -m venv venv
+./venv/bin/pip install spotipy cherrypy anthropic requests
+```
+
+`jq` is needed by `dj_aliases.sh`.
 
 ### 2. Install node-sonos-http-api
 
@@ -175,10 +187,11 @@ nano config.json
 First-time auth requires a browser. On your Mac/PC:
 
 ```bash
-pip install spotipy
-python auth.py  # Opens browser for OAuth, writes .cache
-scp .cache pi@lennypi:~/spotify-server/
+./venv/bin/python auth.py   # opens a browser, writes .cache
 ```
+
+Run this on the machine that will host the server. If you authenticate
+elsewhere, copy `.cache` across (`scp .cache user@host:~/spotify-server/`).
 
 `.cache` holds a long-lived refresh token in plaintext — treat it like a
 password. To **rotate** it, revoke the app first at
@@ -187,75 +200,103 @@ alone issues a new token but leaves the old one valid.
 
 ### 6. Set up services
 
-**Sonos API:**
+Two services need to stay running: `node-sonos-http-api` (port 5005) and this
+server (port 5006).
+
+**macOS (launchd)** — create `~/Library/LaunchAgents/com.you.spotify-server.plist`:
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.you.spotify-server</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/full/path/to/spotify-server/venv/bin/python3</string>
+        <string>server.py</string>
+    </array>
+    <key>WorkingDirectory</key>
+    <string>/full/path/to/spotify-server</string>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>/full/path/to/spotify-server/logs/spotify-server.log</string>
+    <key>StandardErrorPath</key>
+    <string>/full/path/to/spotify-server/logs/spotify-server.error.log</string>
+</dict>
+</plist>
+```
+
+Make an equivalent plist for node-sonos-http-api, then:
+
 ```bash
-sudo nano /etc/systemd/system/sonos-api.service
-```
-```ini
-[Unit]
-Description=Sonos HTTP API
-After=network-online.target
-
-[Service]
-Type=simple
-User=pi
-WorkingDirectory=/home/pi/node-sonos-http-api
-ExecStart=/usr/bin/node server.js
-Restart=always
-
-[Install]
-WantedBy=multi-user.target
+mkdir -p logs
+launchctl load ~/Library/LaunchAgents/com.you.spotify-server.plist
 ```
 
-**DJ Server:**
+`KeepAlive` restarts the process if it exits, so `kill` is a safe way to
+restart it. To apply code changes:
+
 ```bash
-sudo nano /etc/systemd/system/spotify-api.service
+launchctl kickstart -k gui/$(id -u)/com.you.spotify-server
 ```
+
+**Linux (systemd):**
+
 ```ini
+# /etc/systemd/system/spotify-api.service
 [Unit]
 Description=DJ Server
 After=network-online.target
 
 [Service]
 Type=simple
-User=pi
-WorkingDirectory=/home/pi/spotify-server
-ExecStart=/usr/bin/python /home/pi/spotify-server/server.py
+User=YOUR_USER
+WorkingDirectory=/home/YOUR_USER/spotify-server
+ExecStart=/home/YOUR_USER/spotify-server/venv/bin/python server.py
 Restart=always
 
 [Install]
 WantedBy=multi-user.target
 ```
 
-Enable and start:
 ```bash
 sudo systemctl daemon-reload
-sudo systemctl enable sonos-api spotify-api
-sudo systemctl start sonos-api spotify-api
+sudo systemctl enable --now sonos-api spotify-api
+```
+
+On startup the server logs one line stating what it believes — room, model,
+and whether auth, the CLI token and Claude are configured:
+
+```
+01/Aug/2026:16:21:58 INFO    dj: Starting DJ server: room=Dining%20Room model=claude-sonnet-5 auth=on cli_token=set claude=configured
 ```
 
 ### 7. Set up CLI aliases
 
-Add to `~/.bashrc`:
+Add to your shell's rc file (`~/.zshrc` on modern macOS, `~/.bashrc` on Linux):
+
 ```bash
 source ~/spotify-server/dj_aliases.sh
 ```
 
-Reload:
-```bash
-source ~/.bashrc
-```
+Then reload it (`source ~/.zshrc`). The aliases read `cli_token` from
+`config.json` at load time, so re-source after rotating it.
 
 ### 8. Set up Cloudflare Tunnel (for public access)
 
 1. Create account at https://cloudflare.com
 2. Add your domain and update nameservers
 3. Go to Zero Trust → Networks → Tunnels → Create tunnel
-4. Install cloudflared on Pi:
+4. Install cloudflared:
 ```bash
-curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-arm64 -o cloudflared
-chmod +x cloudflared
-sudo mv cloudflared /usr/local/bin/
+brew install cloudflared                       # macOS
+# Linux/Pi: download the build matching your architecture from
+# https://github.com/cloudflare/cloudflared/releases/latest
 ```
 5. Run the install command Cloudflare provides
 6. Add public hostname: `dj.yourdomain.com` → `http://localhost:5006`
@@ -263,28 +304,60 @@ sudo mv cloudflared /usr/local/bin/
 ## Troubleshooting
 
 ### Check services
+
 ```bash
-sudo systemctl status sonos-api
-sudo systemctl status spotify-api
-sudo systemctl status cloudflared
+launchctl list | grep -i 'spotify\|sonos\|cloudflare'   # macOS
+sudo systemctl status sonos-api spotify-api cloudflared  # Linux
+```
+
+Or ask the server itself — this reports whether the upstreams are actually
+reachable, and returns 503 if either is down:
+
+```bash
+curl -H "X-DJ-Token: $(jq -r .cli_token config.json)" http://localhost:5006/health
+# {"sonos": "ok", "spotify": "ok", "uptime_seconds": 1042}
 ```
 
 ### View logs
+
 ```bash
-journalctl -u spotify-api -f
-journalctl -u cloudflared -f
+tail -f logs/spotify-server.log          # macOS: launchd redirects here
+journalctl -u spotify-api -f             # Linux
+```
+
+Application messages are prefixed `dj:` and interleave with the request log:
+
+```bash
+grep ' dj: ' logs/spotify-server.log            # app events only
+grep -E 'WARNING|ERROR' logs/spotify-server.log # problems only
 ```
 
 ### Restart services
+
 ```bash
-sudo systemctl restart sonos-api spotify-api cloudflared
+launchctl kickstart -k gui/$(id -u)/com.you.spotify-server   # macOS
+sudo systemctl restart sonos-api spotify-api cloudflared     # Linux
 ```
 
 ### Test locally
+
+Every endpoint except `/`, `/ui` and `/login` needs credentials:
+
 ```bash
-curl http://localhost:5006/nowplaying
-curl "http://localhost:5006/search?q=beatles"
+TOKEN=$(jq -r .cli_token config.json)
+curl -H "X-DJ-Token: $TOKEN" http://localhost:5006/nowplaying
+curl -H "X-DJ-Token: $TOKEN" "http://localhost:5006/search?q=beatles"
 ```
+
+A bare `curl http://localhost:5006/nowplaying` returns
+`{"error": "Authentication required"}` — that is expected, not a fault.
+
+### `dj` commands return 401
+
+The CLI reads `cli_token` from `config.json` when `dj_aliases.sh` is sourced.
+After changing it, re-source the file (or open a new shell). If the server was
+restarted but the token was only just added to `config.json`, restart the
+server too.
 
 ### Token expired
 Re-run auth.py on your Mac and copy the new `.cache` file to the Pi.
@@ -323,16 +396,24 @@ request by address alone — exempting localhost would expose everything.
 ## Project Structure
 
 ```
-~/spotify-server/
-├── server.py          # Main DJ server (port 5006)
-├── config.json        # Spotify + Anthropic credentials
-├── dj_aliases.sh      # CLI aliases
-├── .cache             # Spotify OAuth token
-└── README.md
+spotify-server/
+├── server.py             # DJ server (port 5006)
+├── auth.py               # One-off Spotify OAuth flow -> .cache
+├── static/index.html     # Web UI markup, CSS and JS
+├── dj_aliases.sh         # `dj` CLI (needs jq)
+├── config.json           # Credentials + settings   (gitignored)
+├── .cache                # Spotify OAuth token      (gitignored)
+├── logs/                 # launchd stdout/stderr    (gitignored)
+├── conftest.py           # Test fixtures; mocks Spotify and config
+└── test_*.py             # Test suite -- no network or credentials needed
 
 ~/node-sonos-http-api/
 └── (Sonos control server, port 5005)
 ```
+
+Settings live in `DEFAULTS` at the top of `server.py` (timeouts, limits, model,
+port) and any of them can be overridden by adding the same key to
+`config.json`.
 
 ## License
 
