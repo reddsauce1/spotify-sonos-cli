@@ -145,8 +145,8 @@ npm install
 
 ```bash
 cd ~
-git clone https://github.com/YOUR_USERNAME/spotify-server.git
-cd spotify-server
+git clone https://github.com/reddsauce1/spotify-sonos-cli.git
+cd spotify-sonos-cli
 ```
 
 ### 4. Configure

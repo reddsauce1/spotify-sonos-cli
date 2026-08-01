@@ -152,7 +152,7 @@ class DJServer:
 
     # ==================== WEB UI ====================
 
-@cherrypy.expose
+    @cherrypy.expose
     def ui(self):
         # Check if password is required
         if UI_PASSWORD:
@@ -753,6 +753,30 @@ class DJServer:
 
     # ==================== INTERNAL METHODS ====================
 
+    def _sonos_request(self, endpoint, timeout=5):
+        """Make a request to the Sonos HTTP API with error handling.
+
+        Returns parsed JSON on success, or {"ok": True} if the response
+        has no JSON body.  On failure returns {"error": "...", "endpoint": endpoint}.
+        """
+        url = f"{SONOS_URL}/{endpoint.lstrip('/')}"
+        try:
+            response = requests.get(url, timeout=timeout)
+        except requests.exceptions.Timeout:
+            return {"error": "Sonos request timed out", "endpoint": endpoint}
+        except requests.exceptions.ConnectionError:
+            return {"error": "Cannot reach Sonos API (node-sonos-http-api)", "endpoint": endpoint}
+        except requests.exceptions.RequestException as e:
+            return {"error": f"Sonos request failed: {str(e)}", "endpoint": endpoint}
+
+        if response.status_code != 200:
+            return {"error": f"Sonos returned HTTP {response.status_code}", "endpoint": endpoint}
+
+        try:
+            return response.json()
+        except ValueError:
+            return {"ok": True}
+
     def _do_search(self, q, type="track", limit=5, session_id='global'):
         results = sp.search(q=q, type=type, limit=int(limit))
         output = []
@@ -773,7 +797,9 @@ class DJServer:
 
     def _do_play(self, num=None, uri=None, session_id='global'):
         if uri:
-            requests.get(f"{SONOS_URL}/spotify/now/{uri}")
+            result = self._sonos_request(f"spotify/now/{uri}")
+            if "error" in result:
+                return result
             return {"status": "playing", "uri": uri}
 
         if num:
@@ -782,14 +808,18 @@ class DJServer:
             if num < 1 or num > len(results):
                 return {"error": f"Invalid selection. Choose 1-{len(results)}"}
             item = results[num - 1]
-            requests.get(f"{SONOS_URL}/spotify/now/{item['uri']}")
+            result = self._sonos_request(f"spotify/now/{item['uri']}")
+            if "error" in result:
+                return result
             return {"status": "playing", "item": item}
 
         return {"error": "Provide num or uri"}
 
     def _do_queue(self, num=None, uri=None, session_id='global'):
         if uri:
-            requests.get(f"{SONOS_URL}/spotify/queue/{uri}")
+            result = self._sonos_request(f"spotify/queue/{uri}")
+            if "error" in result:
+                return result
             return {"status": "queued", "uri": uri}
 
         if num:
@@ -798,14 +828,18 @@ class DJServer:
             if num < 1 or num > len(results):
                 return {"error": f"Invalid selection. Choose 1-{len(results)}"}
             item = results[num - 1]
-            requests.get(f"{SONOS_URL}/spotify/queue/{item['uri']}")
+            result = self._sonos_request(f"spotify/queue/{item['uri']}")
+            if "error" in result:
+                return result
             return {"status": "queued", "item": item}
 
         return {"error": "Provide num or uri"}
 
     def _do_next(self, num=None, uri=None, session_id='global'):
         if uri:
-            requests.get(f"{SONOS_URL}/spotify/next/{uri}")
+            result = self._sonos_request(f"spotify/next/{uri}")
+            if "error" in result:
+                return result
             return {"status": "playing next", "uri": uri}
 
         if num:
@@ -814,55 +848,84 @@ class DJServer:
             if num < 1 or num > len(results):
                 return {"error": f"Invalid selection. Choose 1-{len(results)}"}
             item = results[num - 1]
-            requests.get(f"{SONOS_URL}/spotify/next/{item['uri']}")
+            result = self._sonos_request(f"spotify/next/{item['uri']}")
+            if "error" in result:
+                return result
             return {"status": "playing next", "item": item}
 
         return {"error": "Provide num or uri"}
 
     def _do_pause(self):
-        requests.get(f"{SONOS_URL}/pause")
+        result = self._sonos_request("pause")
+        if "error" in result:
+            return result
         return {"status": "paused"}
 
     def _do_resume(self):
-        requests.get(f"{SONOS_URL}/play")
+        result = self._sonos_request("play")
+        if "error" in result:
+            return result
         return {"status": "playing"}
 
     def _do_skip(self):
-        requests.get(f"{SONOS_URL}/next")
+        result = self._sonos_request("next")
+        if "error" in result:
+            return result
         return {"status": "skipped"}
 
     def _do_previous(self):
-        requests.get(f"{SONOS_URL}/previous")
+        result = self._sonos_request("previous")
+        if "error" in result:
+            return result
         return {"status": "previous"}
 
     def _do_volume(self, level=None, change=None):
         if level:
-            requests.get(f"{SONOS_URL}/volume/{level}")
+            result = self._sonos_request(f"volume/{level}")
+            if "error" in result:
+                return result
             return {"status": "volume set", "level": level}
         elif change:
-            requests.get(f"{SONOS_URL}/volume/{change}")
+            result = self._sonos_request(f"volume/{change}")
+            if "error" in result:
+                return result
             return {"status": "volume adjusted", "change": change}
         else:
-            state = requests.get(f"{SONOS_URL}/state").json()
-            return {"volume": state.get('volume', 'unknown')}
+            result = self._sonos_request("state")
+            if "error" in result:
+                return result
+            return {"volume": result.get('volume', 'unknown')}
 
     def _do_nowplaying(self):
-        state = requests.get(f"{SONOS_URL}/state").json()
-        track = state.get('currentTrack', {})
+        result = self._sonos_request("state")
+        if "error" in result:
+            return {
+                "title": "Nothing playing",
+                "artist": "",
+                "album": "",
+                "volume": 0,
+                "playbackState": "unknown",
+                "error": result["error"]
+            }
+        track = result.get('currentTrack', {})
         return {
             "title": track.get('title', 'Nothing playing'),
             "artist": track.get('artist', ''),
             "album": track.get('album', ''),
-            "volume": state.get('volume', 0),
-            "playbackState": state.get('playbackState', 'unknown')
+            "volume": result.get('volume', 0),
+            "playbackState": result.get('playbackState', 'unknown')
         }
 
     def _do_getqueue(self):
-        response = requests.get(f"{SONOS_URL}/queue")
-        return {"queue": response.json()}
+        result = self._sonos_request("queue")
+        if "error" in result:
+            return {"queue": [], "error": result["error"]}
+        return {"queue": result}
 
     def _do_clearqueue(self):
-        requests.get(f"{SONOS_URL}/clearqueue")
+        result = self._sonos_request("clearqueue")
+        if "error" in result:
+            return result
         return {"status": "queue cleared"}
 
     # ==================== PUBLIC API ENDPOINTS ====================
@@ -971,7 +1034,9 @@ class DJServer:
     @cherrypy.expose
     @cherrypy.tools.json_out()
     def like(self):
-        state = requests.get(f"{SONOS_URL}/state").json()
+        state = self._sonos_request("state")
+        if "error" in state:
+            return state
         track_uri = state.get('currentTrack', {}).get('uri', '')
 
         if 'spotify' not in track_uri:
@@ -1058,16 +1123,18 @@ class DJServer:
             return {"error": "Use /recommend?based_on=nowplaying"}
         
         # Get currently playing track's artist
-        state = requests.get(f"{SONOS_URL}/state").json()
+        state = self._sonos_request("state")
+        if "error" in state:
+            return state
         track_uri = state.get('currentTrack', {}).get('uri', '')
-        
+
         if 'spotify' not in track_uri:
             return {"error": "Current track is not from Spotify"}
-        
+
         decoded = urllib.parse.unquote(track_uri)
         if 'track:' not in decoded:
             return {"error": "Can't parse track URI"}
-        
+
         track_id = decoded.split('track:')[1].split('?')[0]
         track = sp.track(track_id)
         artist_id = track['artists'][0]['id']
@@ -1099,9 +1166,11 @@ class DJServer:
             return {"error": "Use /album_tracks?based_on=nowplaying"}
         
         # Get currently playing track
-        state = requests.get(f"{SONOS_URL}/state").json()
+        state = self._sonos_request("state")
+        if "error" in state:
+            return state
         track_uri = state.get('currentTrack', {}).get('uri', '')
-        
+
         if 'spotify' not in track_uri:
             return {"error": "Current track is not from Spotify"}
         
