@@ -36,6 +36,12 @@ SONOS_URL = f"{SONOS_BASE_URL}/{SONOS_ROOM}"
 # Monotonic so uptime is unaffected by the clock being adjusted under us.
 SERVER_START = time.monotonic()
 
+# node-sonos-http-api serves the entire queue from /queue. On a long queue that
+# is several megabytes and takes over 6 seconds -- longer than the request
+# timeout -- so getqueue used to time out every time and report an empty queue.
+# /queue/{limit} answers in milliseconds.
+QUEUE_DISPLAY_LIMIT = 50
+
 # Claude setup
 ANTHROPIC_API_KEY = config.get('anthropic_api_key', '')
 
@@ -1008,25 +1014,46 @@ class DJServer:
         """Make a request to the Sonos HTTP API with error handling.
 
         Returns parsed JSON on success, or {"ok": True} if the response
-        has no JSON body.  On failure returns {"error": "...", "endpoint": endpoint}.
+        has no JSON body.  On failure returns {"error": "...", "endpoint": endpoint}
+        and sets the response status to 502.
+
+        The error dict is returned rather than raised so callers can decide
+        what to do with it -- chat() turns it into a friendly sentence, and
+        the _do_* helpers propagate it. The 502 is set here, at the single
+        point where an upstream failure is detected, so no caller can forget.
         """
         url = f"{SONOS_URL}/{endpoint.lstrip('/')}"
         try:
             response = requests.get(url, timeout=timeout)
         except requests.exceptions.Timeout:
-            return {"error": "Sonos request timed out", "endpoint": endpoint}
+            return self._sonos_error("Sonos request timed out", endpoint)
         except requests.exceptions.ConnectionError:
-            return {"error": "Cannot reach Sonos API (node-sonos-http-api)", "endpoint": endpoint}
+            return self._sonos_error(
+                "Cannot reach Sonos API (node-sonos-http-api)", endpoint
+            )
         except requests.exceptions.RequestException as e:
-            return {"error": f"Sonos request failed: {str(e)}", "endpoint": endpoint}
+            return self._sonos_error(f"Sonos request failed: {str(e)}", endpoint)
 
         if response.status_code != 200:
-            return {"error": f"Sonos returned HTTP {response.status_code}", "endpoint": endpoint}
+            return self._sonos_error(
+                f"Sonos returned HTTP {response.status_code}", endpoint
+            )
 
         try:
             return response.json()
         except ValueError:
             return {"ok": True}
+
+    @staticmethod
+    def _sonos_error(message, endpoint):
+        """Build a Sonos error payload and mark the response as an upstream failure.
+
+        502 rather than 500: the DJ server is fine, the thing behind it is not.
+        Without this the caller sees HTTP 200 and a body it may never inspect,
+        so a dead Sonos looks like a successful pause.
+        """
+        cherrypy.response.status = 502
+        return {"error": message, "endpoint": endpoint}
 
     def _get_result_item(self, num, session_id='global'):
         """Resolve a 1-based selection number into a stored search result.
@@ -1173,10 +1200,16 @@ class DJServer:
         }
 
     def _do_getqueue(self):
-        result = self._sonos_request("queue")
+        """Return the first QUEUE_DISPLAY_LIMIT tracks in the queue.
+
+        `limit` is echoed back so a client can tell a full queue of exactly
+        that many tracks from a truncated one, rather than presenting the cap
+        as the real total.
+        """
+        result = self._sonos_request(f"queue/{QUEUE_DISPLAY_LIMIT}")
         if "error" in result:
             return {"queue": [], "error": result["error"]}
-        return {"queue": result}
+        return {"queue": result, "limit": QUEUE_DISPLAY_LIMIT}
 
     def _do_clearqueue(self):
         result = self._sonos_request("clearqueue")

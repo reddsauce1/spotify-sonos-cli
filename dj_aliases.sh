@@ -78,9 +78,14 @@ dj() {
             '
             ;;
         showqueue|sq)
+            # Check .error first: an error response has no .queue, and jq
+            # reports null|length as 0, so a failure used to render as
+            # "Queue is empty" -- which is how a permanently timing-out
+            # getqueue went unnoticed.
             _dj_curl "$DJ_SERVER/getqueue" | jq -r '
-                if (.queue | length) > 0 then
-                    "📋 Queue (\(.queue | length) tracks):\n",
+                if .error then "❌ \(.error)"
+                elif (.queue | length) > 0 then
+                    "📋 Queue (\(.queue | length)\(if .limit and (.queue | length) >= .limit then "+" else "" end) tracks):\n",
                     (.queue[:10][] | "  • \(.title) - \(.artist)")
                 else "📭 Queue is empty" end
             '

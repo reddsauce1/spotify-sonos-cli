@@ -406,8 +406,10 @@ class TestDoGetQueue:
         queue_data = [{"title": "Track 1"}, {"title": "Track 2"}]
         with patch.object(dj, "_sonos_request", return_value=queue_data) as mock_sr:
             result = dj._do_getqueue()
-        mock_sr.assert_called_once_with("queue")
-        assert result == {"queue": queue_data}
+        # Must request a bounded slice: the unbounded /queue takes longer than
+        # the request timeout on a long queue, so it always timed out.
+        mock_sr.assert_called_once_with("queue/50")
+        assert result == {"queue": queue_data, "limit": 50}
 
     def test_getqueue_error(self, dj):
         err = {"error": "timeout", "endpoint": "queue"}

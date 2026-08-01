@@ -401,7 +401,8 @@ class TestDoGetqueue(unittest.TestCase):
         queue_data = [{"title": "Track1"}, {"title": "Track2"}]
         mock_req.return_value = queue_data
         result = dj._do_getqueue()
-        self.assertEqual(result, {"queue": queue_data})
+        self.assertEqual(result, {"queue": queue_data, "limit": 50})
+        mock_req.assert_called_once_with("queue/50")
 
     @patch.object(dj, "_sonos_request")
     def test_getqueue_error(self, mock_req):
