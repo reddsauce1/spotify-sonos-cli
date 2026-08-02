@@ -47,3 +47,10 @@ adding features stops being risky — fill this in then.
 ## Done
 
 - [x] extract a _sonos_request(endpoint, timeout=5) helper method on DJServer with try/except, timeout, status code checking, and structured error returns. Replace all 15+ bare requests.get() calls to localhost:5005 in _do_play, _do_queue, _do_next, _do_pause, _do_resume, _do_skip, _do_previous, _do_volume, _do_nowplaying, _do_getqueue, _do_clearqueue
+- [x] playlist building from the UI: add any search result to a playlist (or a
+      new one), and pick playlists/stations from a dropdown when building a
+      schedule step instead of pasting URIs
+- [x] saved stations: Song Radio URIs 404 on the Web API but play via Sonos,
+      and cannot be generated in-app since the recommendations endpoints were
+      withdrawn -- so paste one once, name it, and reuse it
+- [x] weekly calendar view of what is scheduled

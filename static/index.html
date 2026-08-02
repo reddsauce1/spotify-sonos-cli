@@ -221,6 +221,57 @@
             background: none; border: none; color: #1db954;
             font-size: 13px; cursor: pointer; padding: 4px 10px;
         }
+
+        /* ---- Calendar ---- */
+        .cal-toggle-row { display: flex; gap: 6px; margin: 10px 0; }
+        .cal-toggle-row button {
+            flex: 1; padding: 8px; font-size: 13px; border-radius: 8px; cursor: pointer;
+            background: rgba(255,255,255,0.05); color: #bbb;
+            border: 1px solid rgba(255,255,255,0.12);
+        }
+        .cal-toggle-row button.on { background: rgba(29,185,84,0.18); color: #1db954; }
+        .cal { width: 100%; border-collapse: collapse; font-size: 12px; }
+        .cal th {
+            font-weight: normal; color: #777; padding: 6px 2px; font-size: 11px;
+            border-bottom: 1px solid rgba(255,255,255,0.1);
+        }
+        .cal th.today { color: #1db954; }
+        .cal td {
+            text-align: center; padding: 7px 2px; vertical-align: top;
+            border-bottom: 1px solid rgba(255,255,255,0.05);
+        }
+        .cal td.time {
+            text-align: right; padding-right: 8px; color: #999;
+            font-variant-numeric: tabular-nums; white-space: nowrap;
+        }
+        .cal .hit { cursor: pointer; }
+        .cal .miss { color: #333; }
+        .cal-empty { color: #777; padding: 14px; font-size: 13px; }
+
+        /* ---- Stations ---- */
+        .stn-item {
+            display: flex; align-items: center; gap: 10px; padding: 10px 2px;
+            border-bottom: 1px solid rgba(255,255,255,0.06);
+        }
+        .stn-name { flex: 1; font-size: 14px; }
+        .stn-item button { background: none; border: none; font-size: 16px; cursor: pointer; }
+
+        /* ---- Add-to-playlist sheet ---- */
+        .sheet {
+            display: none; position: fixed; left: 0; right: 0; bottom: 0;
+            background: #16213e; border-top: 1px solid rgba(255,255,255,0.15);
+            border-radius: 14px 14px 0 0; padding: 16px; z-index: 50;
+            max-height: 70vh; overflow-y: auto;
+        }
+        .sheet.open { display: block; }
+        .sheet h3 { margin: 0 0 10px; font-size: 15px; font-weight: normal; color: #ccc; }
+        .sheet-item {
+            padding: 12px 8px; border-bottom: 1px solid rgba(255,255,255,0.07);
+            cursor: pointer; font-size: 15px;
+        }
+        .sheet-close { width: 100%; margin-top: 10px; padding: 10px; border-radius: 8px;
+            background: rgba(255,255,255,0.06); color: #bbb;
+            border: 1px solid rgba(255,255,255,0.12); cursor: pointer; }
     </style>
 </head>
 <body>
@@ -290,16 +341,35 @@
                 <option value="clearqueue">🗑 Clear queue</option>
             </select>
             <input type="number" id="sched-volume" min="0" max="100" placeholder="volume">
-            <input class="full" type="text" id="sched-uri" placeholder="spotify:playlist:…">
+            <select class="full" id="sched-uri" onchange="maybePasteUri(this)"></select>
             <button class="quick-btn full" onclick="addSchedule()">Create routine</button>
         </div>
+        <div class="cal-toggle-row">
+            <button id="view-list" class="on" onclick="setSchedView('list')">☰ List</button>
+            <button id="view-cal" onclick="setSchedView('cal')">🗓 Week</button>
+        </div>
         <div id="sched-list"></div>
+        <div id="sched-cal" style="display:none"></div>
+
+        <div class="sched-group">📻 STATIONS</div>
+        <div id="stn-list"></div>
+        <div class="sched-form" style="margin-top:8px">
+            <input class="full" type="text" id="stn-name" placeholder="station name, e.g. Kim Fowley Radio">
+            <input class="full" type="text" id="stn-uri" placeholder="spotify:playlist:37i9dQZF1E8…">
+            <button class="quick-btn full" onclick="addStation()">Save station</button>
+        </div>
     </div>
 
     <div class="status" id="status">🎧 What do you want to hear?</div>
     
     <div class="results" id="results"></div>
     
+    <div class="sheet" id="sheet">
+        <h3 id="sheet-title">Add to playlist</h3>
+        <div id="sheet-body"></div>
+        <button class="sheet-close" onclick="closeSheet()">Cancel</button>
+    </div>
+
     <div class="toast" id="toast"></div>
 
     <script>
@@ -427,6 +497,7 @@
                 '<button class="action-btn btn-play" onclick="trackAction(' + item.num + ', &quot;play&quot;)">▶️</button>' +
                 '<button class="action-btn btn-next" onclick="trackAction(' + item.num + ', &quot;next&quot;)">⏭️</button>' +
                 '<button class="action-btn btn-queue" onclick="trackAction(' + item.num + ', &quot;queue&quot;)">+</button>' +
+                '<button class="action-btn" onclick="openAddToPlaylist(' + item.num + ')" title="Add to playlist">➕</button>' +
                 '</div>' +
                 '</div>'
             ).join('');
@@ -558,7 +629,13 @@
         function toggleSchedules() {
             const panel = document.getElementById('sched-panel');
             panel.classList.toggle('open');
-            if (panel.classList.contains('open')) loadSchedules();
+            if (panel.classList.contains('open')) {
+                loadSources().then(() => {
+                    renderStations();
+                    document.getElementById('sched-uri').innerHTML = sourceOptions('');
+                    loadSchedules();
+                });
+            }
         }
 
         function schedActionChanged() {
@@ -610,7 +687,8 @@
                             '<option value="' + a + '">' + ACTION_ICON[a] + ' ' + a + '</option>').join('') +
                     '</select>' +
                     '<input type="number" min="0" max="100" placeholder="volume" id="stepvol-' + s.id + '">' +
-                    '<input type="text" placeholder="spotify:…" id="stepuri-' + s.id + '">' +
+                    '<select class="full" id="stepuri-' + s.id + '" ' +
+                        'onchange="maybePasteUri(this)">' + sourceOptions('') + '</select>' +
                     '<button class="quick-btn full" onclick="addStep(\'' + s.id + '\')">Add step</button>' +
                 '</div>';
 
@@ -721,6 +799,194 @@
         function runSchedule(id) {
             schedPost('/schedule_run', 'id=' + encodeURIComponent(id))
                 .then(({ok, data}) => showToast(ok ? '⚡ Ran it' : '❌ ' + (data.error || 'Failed')));
+        }
+
+
+        // ---- Sources: your playlists + saved stations ----
+        // Cached because the step picker, the calendar and the add-to-playlist
+        // sheet all need them, and /my hits the Spotify API each time.
+        let PLAYLISTS = [];
+        let STATIONS = [];
+
+        function loadSources() {
+            return Promise.all([
+                fetch('/my?action=playlists&limit=50').then(r => r.json()).catch(() => ({})),
+                fetch('/stations').then(r => r.json()).catch(() => ({})),
+            ]).then(([pl, st]) => {
+                PLAYLISTS = pl.your_playlists || [];
+                STATIONS = st.stations || [];
+            });
+        }
+
+        function sourceOptions(selected) {
+            const opt = (uri, label) =>
+                '<option value="' + escapeHtml(uri) + '"' +
+                (uri === selected ? ' selected' : '') + '>' + escapeHtml(label) + '</option>';
+            let html = '<option value="">— choose —</option>';
+            if (PLAYLISTS.length) {
+                html += '<optgroup label="my playlists">' +
+                    PLAYLISTS.map(p => opt(p.uri, p.name)).join('') + '</optgroup>';
+            }
+            if (STATIONS.length) {
+                html += '<optgroup label="stations">' +
+                    STATIONS.map(s => opt(s.uri, '📻 ' + s.name)).join('') + '</optgroup>';
+            }
+            html += '<option value="__paste__">✎ paste a URI…</option>';
+            return html;
+        }
+
+        // ---- Stations ----
+        function renderStations() {
+            const el = document.getElementById('stn-list');
+            if (!STATIONS.length) {
+                el.innerHTML = '<div class="cal-empty">No stations yet. In Spotify: right-click a ' +
+                    'song → Go to Song Radio → Share → Copy link, then paste it below.</div>';
+                return;
+            }
+            el.innerHTML = STATIONS.map(s =>
+                '<div class="stn-item">' +
+                    '<div class="stn-name">📻 ' + escapeHtml(s.name) + '</div>' +
+                    '<button title="Play now" onclick="playUri(\'' + escapeHtml(s.uri) + '\')">▶</button>' +
+                    '<button title="Queue" onclick="queueUri(\'' + escapeHtml(s.uri) + '\')">⏭</button>' +
+                    '<button title="Delete" onclick="deleteStation(\'' + s.id + '\')">🗑</button>' +
+                '</div>'
+            ).join('');
+        }
+
+        function addStation() {
+            const name = document.getElementById('stn-name').value.trim();
+            const uri = document.getElementById('stn-uri').value.trim();
+            schedPost('/station_add', new URLSearchParams({name, uri}).toString())
+                .then(({ok, data}) => {
+                    if (!ok) { showToast('❌ ' + (data.error || 'Could not save')); return; }
+                    document.getElementById('stn-name').value = '';
+                    document.getElementById('stn-uri').value = '';
+                    showToast('📻 Station saved');
+                    loadSources().then(renderStations);
+                });
+        }
+
+        function deleteStation(id) {
+            schedPost('/station_delete', 'id=' + encodeURIComponent(id))
+                .then(() => loadSources().then(renderStations));
+        }
+
+        function playUri(uri) {
+            fetch('/play?uri=' + encodeURIComponent(uri)).then(r => r.json()).then(d => {
+                showToast(d.error ? '❌ ' + d.error : '▶️ Playing');
+                refreshNowPlaying();
+            });
+        }
+
+        function queueUri(uri) {
+            fetch('/queue?uri=' + encodeURIComponent(uri)).then(r => r.json()).then(d => {
+                showToast(d.error ? '❌ ' + d.error : '➕ Queued');
+            });
+        }
+
+        // ---- Add to playlist ----
+        let sheetTrackNum = null;
+
+        function openAddToPlaylist(num) {
+            sheetTrackNum = num;
+            document.getElementById('sheet-title').textContent = 'Add to playlist';
+            const body = PLAYLISTS.length
+                ? PLAYLISTS.map(p =>
+                    '<div class="sheet-item" onclick="addToPlaylist(\'' +
+                    escapeHtml(p.uri) + '\')">' + escapeHtml(p.name) +
+                    '  <span style="color:#777">· ' + escapeHtml(String(p.tracks)) + '</span></div>').join('')
+                : '<div class="cal-empty">No playlists found.</div>';
+            document.getElementById('sheet-body').innerHTML = body +
+                '<div class="sheet-item" onclick="createPlaylistThenAdd()">＋ New playlist…</div>';
+            document.getElementById('sheet').classList.add('open');
+        }
+
+        function closeSheet() {
+            document.getElementById('sheet').classList.remove('open');
+        }
+
+        function addToPlaylist(playlistUri) {
+            const id = playlistUri.split(':').pop();
+            schedPost('/add_to_playlist',
+                new URLSearchParams({playlist_id: id, num: sheetTrackNum}).toString())
+                .then(({ok, data}) => {
+                    closeSheet();
+                    showToast(ok ? '✅ Added' : '❌ ' + (data.error || 'Failed'));
+                });
+        }
+
+        function createPlaylistThenAdd() {
+            const name = prompt('New playlist name');
+            if (!name) return;
+            schedPost('/create_playlist', new URLSearchParams({name}).toString())
+                .then(({ok, data}) => {
+                    if (!ok) { showToast('❌ ' + (data.error || 'Failed')); return; }
+                    loadSources().then(() => addToPlaylist(data.uri));
+                });
+        }
+
+        // ---- Weekly calendar ----
+        function setSchedView(which) {
+            const isCal = which === 'cal';
+            document.getElementById('sched-list').style.display = isCal ? 'none' : '';
+            document.getElementById('sched-cal').style.display = isCal ? '' : 'none';
+            document.getElementById('view-cal').classList.toggle('on', isCal);
+            document.getElementById('view-list').classList.toggle('on', !isCal);
+            if (isCal) renderCalendar();
+        }
+
+        function renderCalendar() {
+            fetch('/schedules').then(r => r.json()).then(data => {
+                const list = (data.schedules || []).filter(s => s.enabled);
+                const el = document.getElementById('sched-cal');
+                if (!list.length) {
+                    el.innerHTML = '<div class="cal-empty">Nothing enabled to show.</div>';
+                    return;
+                }
+                // One row per trigger time; a routine occupies the days it runs.
+                const times = [...new Set(list.map(s => s.time))].sort();
+                // JS getDay() is Sunday-based; the scheduler is Monday-based.
+                const todayIdx = (new Date().getDay() + 6) % 7;
+
+                let html = '<table class="cal"><tr><th></th>' +
+                    DAY_NAMES.map((d, i) =>
+                        '<th class="' + (i === todayIdx ? 'today' : '') + '">' + d + '</th>').join('') +
+                    '</tr>';
+
+                times.forEach(t => {
+                    html += '<tr><td class="time">' + escapeHtml(t) + '</td>';
+                    for (let d = 0; d < 7; d++) {
+                        const here = list.filter(s =>
+                            s.time === t && ((s.days || []).length === 0 || s.days.includes(d)));
+                        if (!here.length) {
+                            html += '<td class="miss">·</td>';
+                        } else {
+                            const icons = here.map(s =>
+                                (s.steps || []).map(st => ACTION_ICON[st.action] || '•').join('')
+                            ).join(' ');
+                            const names = here.map(s => s.label || '(unnamed)').join(', ');
+                            html += '<td class="hit" title="' + escapeHtml(names) + '" ' +
+                                'onclick="showToast(\'' + escapeHtml(t + ' · ' + names) + '\')">' +
+                                escapeHtml(icons) + '</td>';
+                        }
+                    }
+                    html += '</tr>';
+                });
+                el.innerHTML = html + '</table>' +
+                    '<div class="cal-empty">Tap a cell for its name. Disabled routines are hidden.</div>';
+            });
+        }
+
+        function maybePasteUri(sel) {
+            if (sel.value !== '__paste__') return;
+            const v = prompt('Paste a Spotify URI (playlist, album or Song Radio)');
+            if (!v) { sel.value = ''; return; }
+            // Keep it selectable afterwards by adding it as a real option.
+            const opt = document.createElement('option');
+            opt.value = v.trim();
+            opt.textContent = '✎ ' + v.trim();
+            sel.insertBefore(opt, sel.lastElementChild);
+            sel.value = v.trim();
         }
 
         buildDayPicker();

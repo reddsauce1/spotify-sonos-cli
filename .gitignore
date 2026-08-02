@@ -13,3 +13,5 @@ logs/*.db-shm
 logs/*.db-wal
 schedules.json
 schedules.json.tmp
+stations.json
+stations.json.tmp

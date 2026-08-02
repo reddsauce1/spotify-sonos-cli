@@ -146,3 +146,74 @@ class TestJavaScriptIsValid:
         defined = set(re.findall(r'function (\w+)\(', markup))
         missing = called - defined
         assert not missing, f"onclick references undefined function(s): {missing}"
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node not installed")
+class TestWeeklyCalendar:
+    """The calendar is rendered client-side from /schedules."""
+
+    @staticmethod
+    def _render(schedules, today_index=0):
+        with open(INDEX) as f:
+            markup = f.read()
+        def fn(name):
+            start = markup.index("function " + name + "(")
+            return markup[start:markup.index("\n        }", start) + len("\n        }")]
+
+        script = (
+            "const DAY_NAMES = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];\n"
+            "const ACTION_ICON = {play:'>',pause:'||',resume:'>',skip:'>|',"
+            "previous:'|<',volume:'V',clearqueue:'X'};\n"
+            + fn("escapeHtml") + "\n"
+            "const _out = {};\n"
+            "const document = {getElementById: () => ({ set innerHTML(v) { _out.html = v; },"
+            " get innerHTML() { return _out.html; } })};\n"
+            "const fetch = () => Promise.resolve({json: () => Promise.resolve("
+            + json.dumps({"schedules": schedules}) + ")});\n"
+            "const Date = class { getDay() { return " + str((today_index + 1) % 7) + "; } };\n"
+            + fn("renderCalendar") + "\n"
+            "renderCalendar();\n"
+            "setTimeout(() => console.log(_out.html), 0);\n"
+        )
+        out = subprocess.run(["node", "-e", script], capture_output=True, text=True, timeout=30)
+        assert out.returncode == 0, out.stderr
+        return out.stdout
+
+    ROUTINE = {
+        "id": "a", "time": "07:00", "days": [0, 1, 2, 3, 4], "label": "Wake-up",
+        "enabled": True, "steps": [{"offset": 0, "action": "play", "uri": "spotify:playlist:x"}],
+    }
+
+    def test_marks_the_days_a_routine_runs(self):
+        html = self._render([self.ROUTINE])
+        rows = html.split("<tr>")[2]           # the 07:00 row
+        cells = rows.split("<td")[2:]          # skip the time cell
+        assert sum('class="hit"' in c for c in cells) == 5
+        assert sum('class="miss"' in c for c in cells) == 2
+
+    def test_empty_days_fills_the_whole_week(self):
+        html = self._render([{**self.ROUTINE, "days": []}])
+        assert html.count('class="hit"') == 7
+
+    def test_disabled_routines_are_hidden(self):
+        assert "Nothing enabled" in self._render([{**self.ROUTINE, "enabled": False}])
+
+    def test_no_schedules_says_so(self):
+        assert "Nothing enabled" in self._render([])
+
+    def test_times_are_rows_in_order(self):
+        html = self._render([
+            {**self.ROUTINE, "time": "22:30", "id": "b"},
+            self.ROUTINE,
+        ])
+        assert html.index("07:00") < html.index("22:30")
+
+    def test_today_column_is_marked(self):
+        """Monday-based: the scheduler uses 0=Mon, JS getDay() is 0=Sun."""
+        html = self._render([self.ROUTINE], today_index=2)   # Wednesday
+        headers = html.split("</tr>")[0]
+        assert 'class="today">Wed' in headers
+
+    def test_label_is_escaped_in_the_cell(self):
+        html = self._render([{**self.ROUTINE, "label": '<img src=x onerror=alert(1)>'}])
+        assert "<img" not in html.split("<table")[1]

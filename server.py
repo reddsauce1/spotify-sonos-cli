@@ -68,6 +68,7 @@ DEFAULTS = {
     "schedule_tick_seconds": 20,
     "max_schedules": 50,
     "max_steps_per_schedule": 20,
+    "max_stations": 50,
     # 12h: enough for a wind-down that starts in the evening and ends after
     # midnight, without letting an offset drift into ambiguity.
     "max_step_offset_minutes": 720,
@@ -452,6 +453,50 @@ def run_due_schedules(dj):
 
 _schedules = _load_schedules()
 
+
+
+# ==================== STATIONS ====================
+#
+# Spotify exposes Song Radio as an algorithmic playlist (37i9dQZF1E8...).
+# Those URIs 404 on the Web API but Sonos resolves them, so they play fine --
+# what is not possible is *deriving* one for a track, because the endpoints
+# that did that (recommendations, related-artists) were withdrawn from
+# third-party apps in Nov 2024.
+#
+# So the user copies a radio URI out of Spotify once, names it here, and it
+# becomes reusable: playable in a tap and selectable as a schedule step.
+
+STATIONS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'stations.json')
+MAX_STATIONS = _setting('max_stations')
+
+_stations_lock = threading.Lock()
+_stations = []
+
+
+def _load_stations():
+    try:
+        with open(STATIONS_PATH) as f:
+            data = json.load(f)
+    except FileNotFoundError:
+        return []
+    except (ValueError, OSError) as exc:
+        log.error("Cannot read %s (%s) -- continuing with no stations", STATIONS_PATH, exc)
+        return []
+    return data if isinstance(data, list) else []
+
+
+def _save_stations_locked():
+    """Temp file plus rename, as for schedules."""
+    tmp = STATIONS_PATH + '.tmp'
+    try:
+        with open(tmp, 'w') as f:
+            json.dump(_stations, f, indent=2)
+        os.replace(tmp, STATIONS_PATH)
+    except OSError as exc:
+        log.error("Could not write %s: %s", STATIONS_PATH, exc)
+
+
+_stations = _load_stations()
 
 
 def _is_authenticated():
@@ -998,6 +1043,50 @@ class DJServer:
             _fire_schedule(self, {**step, 'label': label})
         return {"status": "ran", "id": id, "steps": len(entry.get('steps', []))}
 
+    # ==================== STATIONS ====================
+
+    @cherrypy.expose
+    @cherrypy.tools.json_out()
+    def stations(self):
+        with _stations_lock:
+            return {"stations": [dict(s) for s in _stations]}
+
+    @cherrypy.expose
+    @cherrypy.tools.json_out()
+    @cherrypy.tools.allow(methods=['POST'])
+    def station_add(self, name=None, uri=None):
+        """Save a named radio URI.
+
+        Validated as a Spotify URI like any other: it is interpolated into the
+        Sonos request path, so '../../Bedroom/pause' must not get through here
+        just because it arrived by a different door.
+        """
+        clean_uri = _validate_uri(uri)
+        clean_name = (name or '').strip()[:80]
+        if not clean_name:
+            _bad_request("name is required")
+
+        entry = {"id": "stn_" + secrets.token_hex(6), "name": clean_name, "uri": clean_uri}
+        with _stations_lock:
+            if len(_stations) >= MAX_STATIONS:
+                _bad_request(f"at most {MAX_STATIONS} stations")
+            _stations.append(entry)
+            _save_stations_locked()
+        log.info("Station added: %s", clean_name)
+        return {"status": "added", "station": entry}
+
+    @cherrypy.expose
+    @cherrypy.tools.json_out()
+    @cherrypy.tools.allow(methods=['POST'])
+    def station_delete(self, id=None):
+        with _stations_lock:
+            before = len(_stations)
+            _stations[:] = [s for s in _stations if s.get('id') != id]
+            if len(_stations) == before:
+                _bad_request(f"no station with id {id!r}")
+            _save_stations_locked()
+        return {"status": "deleted", "id": id}
+
     # ==================== CHAT (Natural Language) ====================
 
     @cherrypy.expose
@@ -1483,6 +1572,7 @@ class DJServer:
 
     @cherrypy.expose
     @cherrypy.tools.json_out()
+    @cherrypy.tools.allow(methods=['POST'])
     @_handles_spotify_errors
     def create_playlist(self, name=None):
         if not name:
@@ -1499,6 +1589,7 @@ class DJServer:
     
     @cherrypy.expose
     @cherrypy.tools.json_out()
+    @cherrypy.tools.allow(methods=['POST'])
     @_handles_spotify_errors
     def add_to_playlist(self, playlist_id=None, num=None, uri=None):
         if not playlist_id:

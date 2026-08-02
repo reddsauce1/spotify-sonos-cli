@@ -99,6 +99,9 @@ dj help
 | `/schedule_delete` | Remove by id (POST) |
 | `/schedule_toggle` | Enable/disable by id (POST) |
 | `/schedule_run` | Run every step now, ignoring offsets (POST) |
+| `/stations` | List saved radio stations |
+| `/station_add` | Save a named radio URI (POST) |
+| `/station_delete` | Remove one by id (POST) |
 | `/ui` | Web interface |
 | `/chat?message=<text>` | Natural language (Claude AI) |
 | `/search?q=<query>` | Search Spotify |
@@ -425,6 +428,13 @@ an alarm cannot blast at whatever level last night ended on.
 The ⚡ button runs every step immediately, ignoring offsets — so you can check a
 playlist URI works without sitting through a 60-minute fade.
 
+### Viewing what's scheduled
+
+The ⏰ panel has two views. **☰ List** groups routines by the days they run;
+**🗓 Week** shows a seven-column grid so clashes are visible at a glance —
+which is how a stray 07:15 `pause` sitting in the middle of a 07:00 wake-up
+gets spotted. Only enabled routines appear in the grid.
+
 ### How it behaves
 
 Steps are matched against the clock on every tick rather than run by a sleeping
@@ -450,6 +460,31 @@ zero-offset step automatically.
 To get a playlist URI: right-click a playlist in Spotify → Share → Copy Spotify
 URI, or run `dj playlists` and take the `uri` field.
 
+## Stations (Song Radio)
+
+Spotify exposes Song Radio as an algorithmic playlist — right-click a track →
+**Go to Song Radio** → Share → Copy link, and you get a
+`spotify:playlist:37i9dQZF1E8…` URI.
+
+Those URIs **404 on the Spotify Web API but play fine through Sonos**, because
+Sonos has its own Spotify integration. Paste one into the 📻 STATIONS box with
+a name, and it becomes reusable: one tap to play or queue, and selectable as a
+schedule step alongside your own playlists.
+
+What is *not* possible is generating a radio URI for a track from inside the
+app. That needs `/v1/recommendations` or `/v1/artists/{id}/related-artists`,
+both withdrawn from third-party apps in November 2024 — they return 404 here.
+`artist_top_tracks` still works, which is what `/recommend` uses.
+
+## Building playlists
+
+Search for a track and press ➕ to add it to any of your playlists, or create a
+new one inline. Schedule steps then pick a playlist or station from a dropdown
+rather than needing a pasted URI.
+
+`/create_playlist` and `/add_to_playlist` are POST-only — they change Spotify
+state, so a GET would let a stray link or a browser prefetch mutate a playlist.
+
 ## Project Structure
 
 ```
@@ -460,7 +495,8 @@ spotify-server/
 ├── dj_aliases.sh         # `dj` CLI (needs jq)
 ├── config.json           # Credentials + settings   (gitignored)
 ├── .cache                # Spotify OAuth token      (gitignored)
-├── schedules.json        # Scheduled actions        (gitignored)
+├── schedules.json        # Scheduled routines       (gitignored)
+├── stations.json         # Saved radio URIs         (gitignored)
 ├── logs/                 # launchd stdout/stderr    (gitignored)
 ├── conftest.py           # Test fixtures; mocks Spotify and config
 └── test_*.py             # Test suite -- no network or credentials needed
