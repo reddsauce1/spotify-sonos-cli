@@ -322,10 +322,17 @@ class TestDoVolume(unittest.TestCase):
 
     @patch.object(dj, "_sonos_request")
     def test_volume_adjust_success(self, mock_req):
-        mock_req.return_value = {"ok": True}
+        mock_req.side_effect = [{"ok": True}, {"volume": 30}]
         result = dj._do_volume(change="+10")
-        self.assertEqual(result, {"status": "volume adjusted", "change": "+10"})
-        mock_req.assert_called_once_with("volume/+10")
+        self.assertEqual(
+            result, {"status": "volume adjusted", "change": "+10", "level": 30})
+
+    @patch.object(dj, "_sonos_request")
+    def test_volume_adjust_omits_level_when_state_has_none(self, mock_req):
+        """A null level is worse than no level -- it reads as a real value."""
+        mock_req.side_effect = [{"ok": True}, {"playbackState": "PLAYING"}]
+        result = dj._do_volume(change="+10")
+        self.assertNotIn("level", result)
 
     @patch.object(dj, "_sonos_request")
     def test_volume_adjust_error(self, mock_req):

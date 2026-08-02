@@ -1641,12 +1641,48 @@ class DJServer:
             result = self._sonos_request(f"volume/{change}")
             if "error" in result:
                 return result
-            return {"status": "volume adjusted", "change": change}
+            # Report where it landed, not just what was asked for. A caller
+            # nudging by one has no way to know the result otherwise, and it
+            # differs from the arithmetic whenever Sonos clamps at 0 or 100
+            # or something else moved the volume in between. Unlike play mode,
+            # volume in /state is current immediately after the change.
+            payload = {"status": "volume adjusted", "change": change}
+            state = self._sonos_request("state")
+            if "error" not in state and state.get('volume') is not None:
+                payload["level"] = state.get('volume')
+            return payload
         else:
             result = self._sonos_request("state")
             if "error" in result:
                 return result
             return {"volume": result.get('volume', 'unknown')}
+
+    def _do_shuffle(self, state=None):
+        """Read or set shuffle.
+
+        The reply from Sonos is trusted over a follow-up /state read because
+        play mode lags: for about a second and a half after the change, state
+        still reports the old value. Reading it back would show the user the
+        setting they just turned off.
+        """
+        if state is None:
+            result = self._sonos_request("state")
+            if "error" in result:
+                return result
+            return {"shuffle": bool(result.get('playMode', {}).get('shuffle'))}
+
+        wanted = str(state).strip().lower()
+        if wanted in ('on', 'true', '1', 'yes'):
+            wanted = 'on'
+        elif wanted in ('off', 'false', '0', 'no'):
+            wanted = 'off'
+        else:
+            _bad_request("shuffle must be on or off")
+
+        result = self._sonos_request(f"shuffle/{wanted}")
+        if "error" in result:
+            return result
+        return {"status": "shuffle set", "shuffle": wanted == 'on'}
 
     def _do_nowplaying(self):
         result = self._sonos_request("state")
@@ -1660,6 +1696,7 @@ class DJServer:
                 "elapsed": 0,
                 "duration": 0,
                 "volume": 0,
+                "shuffle": False,
                 "playbackState": "unknown",
                 "error": result["error"]
             }
@@ -1680,6 +1717,7 @@ class DJServer:
             "elapsed": result.get('elapsedTime', 0),
             "duration": track.get('duration', 0),
             "volume": result.get('volume', 0),
+            "shuffle": bool(result.get('playMode', {}).get('shuffle')),
             "playbackState": result.get('playbackState', 'unknown')
         }
 
@@ -1760,6 +1798,15 @@ class DJServer:
     @cherrypy.tools.json_out()
     def volume(self, level=None, change=None):
         return self._do_volume(level=level, change=change)
+
+    @cherrypy.expose
+    @cherrypy.tools.json_out()
+    def shuffle(self, state=None):
+        """Read shuffle with no argument, set it with state=on|off.
+
+        GET like the other transport controls, for the reason given on seek.
+        """
+        return self._do_shuffle(state=state)
 
     @cherrypy.expose
     @cherrypy.tools.json_out()

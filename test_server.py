@@ -351,10 +351,13 @@ class TestDoVolume:
         assert result == {"status": "volume set", "level": 50}
 
     def test_volume_change(self, dj):
-        with patch.object(dj, "_sonos_request", return_value={"ok": True}) as mock_sr:
+        # Two calls now: the change, then a state read to report where it
+        # landed. A caller nudging by one cannot see the result otherwise.
+        with patch.object(dj, "_sonos_request",
+                          side_effect=[{"ok": True}, {"volume": 30}]) as mock_sr:
             result = dj._do_volume(change="+10")
-        mock_sr.assert_called_once_with("volume/+10")
-        assert result == {"status": "volume adjusted", "change": "+10"}
+        assert mock_sr.call_args_list[0].args == ("volume/+10",)
+        assert result == {"status": "volume adjusted", "change": "+10", "level": 30}
 
     def test_volume_get_state(self, dj):
         with patch.object(
