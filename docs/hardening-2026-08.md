@@ -1,4 +1,16 @@
-# Spotify-Server Hardening Tasks
+# Hardening log — August 2026
+
+Complete. Kept as a record of what was wrong and why each fix was made, not
+as outstanding work; everything below is done.
+
+The server is reachable from the internet through a Cloudflare Tunnel, so the
+ordering here is by risk rather than by category: the first phase closed 21
+endpoints that had no authentication at all, including `/chat`, which bills
+the Anthropic key on every call.
+
+Work after this point is recorded in the git history rather than here.
+
+---
 
 Ordered by risk, not by category. The server is internet-facing via Cloudflare
 Tunnel, so anything reachable without a cookie is reachable by anyone.
@@ -12,7 +24,7 @@ bills the Anthropic API key on every call. Do this phase before anything else.
 - [x] add a _require_auth(self) method or CherryPy before_handler tool that checks the dj_auth cookie. Apply to all exposed API endpoints: search, play, queue, next, pause, resume, skip, previous, volume, nowplaying, getqueue, clearqueue, my, like, help, create_playlist, add_to_playlist, recommend, album_tracks. Return 401 JSON error if not authenticated
 - [x] replace plaintext password in cookie: generate a random session token on login with secrets.token_hex(), store in a server-side set, put the token (not the password) in the cookie. Validate by checking token membership
 - [x] add input validation: wrap int(num) in try/except ValueError in all endpoints that accept num parameter, validate Spotify URI format (must start with spotify:) before passing to Sonos, return proper 400 JSON errors
-- [ ] rotate the Spotify OAuth token in .cache — it is stored in plaintext and the refresh token is long-lived, granting full library read/write. Re-run auth on a trusted machine and replace the file
+- [x] rotate the Spotify OAuth token in .cache — it is stored in plaintext and the refresh token is long-lived, granting full library read/write. Re-run auth on a trusted machine and replace the file
 
 ## Phase 1: Make failures visible
 

@@ -16,7 +16,12 @@ A natural language DJ assistant that controls Spotify playback on Sonos speakers
 - 📋 **Queue Management** - Add to queue, play next, clear queue, view queue
 - 🎚️ **Playback Controls** - Play, pause, skip, previous, volume
 - ❤️ **Library Access** - Browse playlists, liked songs
-- ⏰ **Schedules** - Wake up to music; any action on a recurring time
+- ⏰ **Routines** - Multi-step schedules: fade the volume up, start a playlist, pause at 11
+- 📻 **Stations** - Save a Song Radio URI once, replay or schedule it in a tap
+- 🔀 **Shuffle** - Toggle from the player, follows changes made in the Sonos app
+- ↔️ **Queue Editing** - Drag to reorder, remove a track, see what has already played
+- ⏩ **Seek** - Scrub within the current track
+- 🌓 **Light and Dark** - Follows the system theme, or pick one
 - 💻 **CLI** - Full command-line control via `dj` command
 
 ## Architecture
@@ -43,11 +48,20 @@ Internet (url hidden)
 
 ## Web UI
 
+A two-column split on a desktop, a single column with a compact player bar on
+a phone. Everything is reachable without scrolling unless the list is genuinely
+long.
 
-- Type natural language requests: "play something chill", "add number 3 to queue"
-- Click search results to queue them
-- Quick buttons for pause, play, skip, volume, etc.
-- Shows currently playing track
+- **Player** — artwork, transport, a seek bar, volume with ±1 buttons, shuffle
+- **Search** — tracks, albums, artists and playlists; expand an album in place
+  to see its tracks. Each row can play, queue, play next, add to a playlist, or
+  be scheduled
+- **Queue** — what has already played and what is coming, drag to reorder,
+  ✕ to remove
+- **Schedule** — routines as a grouped list or a weekly calendar. The editor
+  opens as a sheet on a phone and a dialog on a desktop; steps show the
+  wall-clock time they fire at, and the next run is always visible
+- **Ask** — natural language requests: "play something chill", "skip this"
 
 ## CLI Usage
 
@@ -93,9 +107,7 @@ dj help
 |----------|-------------|
 | `/health` | Sonos + Spotify reachability; 503 if either is down |
 | `/schedules` | List scheduled actions |
-| `/schedule_add` | Create a routine, optionally with its first step (POST) |
-| `/schedule_step_add` | Append a step (POST) |
-| `/schedule_step_delete` | Remove a step by index (POST) |
+| `/schedule_save` | Create or replace a whole routine, steps included (POST, JSON body) |
 | `/schedule_delete` | Remove by id (POST) |
 | `/schedule_toggle` | Enable/disable by id (POST) |
 | `/schedule_run` | Run every step now, ignoring offsets (POST) |
@@ -113,7 +125,9 @@ dj help
 | `/skip` | Skip track |
 | `/previous` | Previous track |
 | `/volume?level=<0-100>` | Set volume |
-| `/volume?change=<+/-10>` | Adjust volume |
+| `/volume?change=<+/-10>` | Adjust volume; reports the level it landed on |
+| `/shuffle` | Read shuffle state |
+| `/shuffle?state=on\|off` | Turn shuffle on or off |
 | `/nowplaying` | Current track info |
 | `/getqueue` | View queue |
 | `/queue_window?offset=&limit=` | A slice of the queue plus the playing position |
@@ -130,6 +144,7 @@ dj help
 | `/seek?to=<seconds>` | Jump to a position in the current track |
 | `/create_playlist?name=<name>` | Create new playlist |
 | `/add_to_playlist?playlist_id=<id>&num=<n>` | Add track to playlist |
+| `/help` | List the CLI commands |
 
 ## Requirements
 
