@@ -15,13 +15,6 @@ import pytest
 RADIO_URI = "spotify:playlist:37i9dQZF1E8KIGiyBtlkTg"
 
 
-@pytest.fixture(autouse=True)
-def _isolate(server_mod, tmp_path, monkeypatch):
-    monkeypatch.setattr(server_mod, "STATIONS_PATH", str(tmp_path / "stations.json"))
-    monkeypatch.setattr(server_mod, "_stations", [])
-    yield
-
-
 class TestCrud:
     def test_add_then_list(self, dj, server_mod):
         added = dj.station_add(name="Kim Fowley Radio", uri=RADIO_URI)

@@ -77,6 +77,25 @@ def server_mod():
     return server_module
 
 
+@pytest.fixture(autouse=True)
+def _never_touch_real_data(monkeypatch, tmp_path):
+    """Point the persisted-state paths at a temp dir for every test.
+
+    Three modules each carried their own copy of this, so it protected only
+    the tests that remembered to ask. It is a property of the whole suite --
+    a test must not be able to rewrite the schedules that actually fire in the
+    morning, whether or not its author thought about it -- so it belongs here
+    and applies unconditionally.
+    """
+    monkeypatch.setattr(server_module, "SCHEDULES_PATH",
+                        str(tmp_path / "schedules.json"))
+    monkeypatch.setattr(server_module, "STATIONS_PATH",
+                        str(tmp_path / "stations.json"))
+    monkeypatch.setattr(server_module, "_schedules", [])
+    monkeypatch.setattr(server_module, "_stations", [])
+    yield
+
+
 @pytest.fixture
 def save_schedule(dj, monkeypatch):
     """Create or replace a routine the way the browser does.

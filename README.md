@@ -149,6 +149,7 @@ dj help
 ## Requirements
 
 - A machine that stays on: macOS (launchd, described here) or Linux (systemd)
+- Python 3.10 or newer
 - Python 3.11+ and Node.js
 - Sonos speaker on your network
 - Spotify Premium account
@@ -163,19 +164,34 @@ macOS:
 
 ```bash
 brew install node python jq
-python3 -m venv venv
-./venv/bin/pip install spotipy cherrypy anthropic requests
+python3.13 -m venv venv          # not `python3`: see below
+./venv/bin/pip install -r requirements.txt
 ```
+
+The explicit `python3.13` matters. macOS ships Python 3.9 as
+`/usr/bin/python3`, and if that comes first on your PATH the venv is built
+with an interpreter too old for these pins. pip then reports it as "no
+matching distribution found for requests", which does not sound like a
+version problem at all. Any 3.10 or newer works.
 
 Debian/Raspberry Pi:
 
 ```bash
 sudo apt update && sudo apt install -y nodejs npm python3-venv jq
-python3 -m venv venv
-./venv/bin/pip install spotipy cherrypy anthropic requests
+python3 -m venv venv             # needs 3.10+; check with python3 -V
+./venv/bin/pip install -r requirements.txt
 ```
 
 `jq` is needed by `dj_aliases.sh`.
+
+To run the tests as well:
+
+```bash
+./venv/bin/pip install -r requirements-dev.txt
+./venv/bin/python -m pytest
+```
+
+The suite needs no network, credentials or Sonos.
 
 ### 2. Install node-sonos-http-api
 

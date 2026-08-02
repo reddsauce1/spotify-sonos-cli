@@ -1,5 +1,5 @@
-"""Tests for DEFAULTS/config overrides, config validation, and search-result
-expiry.
+"""Tests for DEFAULTS/config overrides, config validation, and the
+search-result cache -- its expiry and its behaviour under concurrency.
 
 The expiry matters because every distinct session_id the web UI sends created
 a permanent dict entry: a public URL plus a few months of party guests is an
@@ -10,6 +10,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import threading
 
 import pytest
 
@@ -225,3 +226,70 @@ class TestParseTrackId:
             source = f.read()
         assert source.count("_parse_track_id(") == 4  # 1 definition + 3 callers
         assert source.count("split('track:')") == 1   # only inside the helper
+
+
+# The same cache as TestSearchResultExpiry above, under concurrency.
+class TestSearchResultsAreThreadSafe:
+    """CherryPy serves on a thread pool, and the expiry sweep is not safe under
+    that: it iterates the dict looking for stale entries, then picks the oldest
+    key and deletes it. A concurrent insert mid-iteration raises "dictionary
+    changed size during iteration"; two threads choosing the same oldest key
+    raise KeyError on the second delete."""
+
+    @pytest.fixture
+    def interleaved(self):
+        """Shorten the thread switch interval so the race is hit reliably.
+
+        At the default 5ms the window is small enough that a few hundred
+        iterations pass even with no lock at all -- an earlier version of this
+        test did, and would have let the lock be deleted silently.
+        """
+        import sys
+        previous = sys.getswitchinterval()
+        sys.setswitchinterval(1e-9)
+        yield
+        sys.setswitchinterval(previous)
+
+    def test_there_is_a_lock(self, server_mod):
+        assert isinstance(server_mod._results_lock, type(threading.Lock()))
+
+    @pytest.mark.parametrize("accessor", ["set_results", "get_results"])
+    def test_both_accessors_take_it(self, server_mod, accessor):
+        import inspect
+        body = inspect.getsource(getattr(server_mod, accessor))
+        assert "with _results_lock:" in body
+
+    def test_concurrent_writes_do_not_raise(self, server_mod, monkeypatch, interleaved):
+        """The eviction path is the dangerous one, so the cap is set low enough
+        that every write triggers it."""
+        monkeypatch.setattr(server_mod, "MAX_SEARCH_SESSIONS", 4)
+        monkeypatch.setattr(server_mod, "search_results", {})
+        errors = []
+
+        def hammer(base):
+            try:
+                for i in range(3000):
+                    server_mod.set_results([{"num": 1, "uri": "spotify:track:x"}],
+                                           f"{base}-{i}")
+                    server_mod.get_results(f"{base}-{i}")
+            except Exception as exc:      # noqa: BLE001 -- recording, not hiding
+                errors.append(f"{type(exc).__name__}: {exc}")
+
+        threads = [threading.Thread(target=hammer, args=(n,)) for n in range(12)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=60)
+
+        assert not errors, f"raced: {errors[:3]}"
+        assert len(server_mod.search_results) <= 4
+
+    def test_the_cap_still_holds_afterwards(self, server_mod, monkeypatch):
+        monkeypatch.setattr(server_mod, "MAX_SEARCH_SESSIONS", 3)
+        monkeypatch.setattr(server_mod, "search_results", {})
+        for i in range(20):
+            server_mod.set_results([], f"s{i}")
+        assert len(server_mod.search_results) <= 3
+
+
+# ==================== request body =======================================

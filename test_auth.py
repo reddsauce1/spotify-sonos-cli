@@ -1,8 +1,11 @@
-"""Tests for authentication and request-parameter validation.
+"""Tests for authentication.
 
 The rest of the suite runs with ui_password="" which short-circuits
 _is_authenticated() to True, so none of it exercises the auth path. These
 tests set a password explicitly and drive the helpers directly.
+
+The parameter validators moved to test_input_validation.py; they were only
+here because auth was the first feature that needed them.
 """
 import types
 
@@ -130,67 +133,6 @@ class TestCheckAuth:
 
 
 # ======================== input validation ========================
-
-
-class TestValidateUri:
-    @pytest.mark.parametrize("uri", [
-        "spotify:track:4uLU6hMCjMI75M1A2tKUQC",
-        "spotify:album:aaa",
-        "spotify:playlist:ZZZ999",
-    ])
-    def test_accepts_spotify_uris(self, server_mod, uri):
-        assert server_mod._validate_uri(uri) == uri
-
-    @pytest.mark.parametrize("uri", [
-        "../../Bedroom/pause",
-        "../pause",
-        "spotify:track:../../pause",
-        "http://evil.example/x",
-        "notaspotifyuri",
-        "spotify:track:has spaces",
-        "",
-        None,
-    ])
-    def test_rejects_anything_else(self, server_mod, uri):
-        """These would otherwise be interpolated into the Sonos request path."""
-        with pytest.raises(server_mod.cherrypy.HTTPError) as exc:
-            server_mod._validate_uri(uri)
-        assert exc.value.status == 400
-
-
-class TestValidateInt:
-    def test_accepts_in_range(self, server_mod):
-        assert server_mod._validate_int("5", "num", 1, 10) == 5
-
-    @pytest.mark.parametrize("value", ["abc", "", None, "1.5", "0x10"])
-    def test_rejects_non_numeric(self, server_mod, value):
-        with pytest.raises(server_mod.cherrypy.HTTPError) as exc:
-            server_mod._validate_int(value, "num", 1, 10)
-        assert exc.value.status == 400
-
-    @pytest.mark.parametrize("value", [0, 11, -1, 9999])
-    def test_rejects_out_of_range(self, server_mod, value):
-        with pytest.raises(server_mod.cherrypy.HTTPError) as exc:
-            server_mod._validate_int(value, "num", 1, 10)
-        assert exc.value.status == 400
-
-
-class TestValidateVolumeChange:
-    @pytest.mark.parametrize("given,expected", [
-        ("+10", "+10"),
-        ("10", "+10"),
-        ("-10", "-10"),
-        (0, "+0"),
-    ])
-    def test_normalises_sign(self, server_mod, given, expected):
-        """Sonos expects an explicit sign on relative changes."""
-        assert server_mod._validate_volume_change(given) == expected
-
-    @pytest.mark.parametrize("value", ["abc", "../pause", 999, -999])
-    def test_rejects_bad_values(self, server_mod, value):
-        with pytest.raises(server_mod.cherrypy.HTTPError) as exc:
-            server_mod._validate_volume_change(value)
-        assert exc.value.status == 400
 
 
 class TestGetResultItem:

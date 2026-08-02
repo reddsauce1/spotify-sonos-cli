@@ -5,7 +5,12 @@ call happens. Branches that dropped the helper's return value therefore told
 the user the action succeeded even when Sonos was unreachable -- the response
 carried a 502 while the body said everything was fine, and the UI renders the
 body.
+
+Also covers the limits on /chat, which is the only endpoint that costs money:
+it bills the Anthropic key on every call, and the message reaches the model
+as input tokens verbatim.
 """
+import re
 from unittest.mock import patch
 
 import pytest
@@ -119,3 +124,104 @@ class TestEveryActionCapturesItsOutcome:
             if re.match(r'\s*self\._do_\w+\(', line)
         ]
         assert not offenders, f"result discarded: {offenders}"
+
+
+# /chat is the only endpoint that costs money -- it bills the Anthropic key on
+# every call, and the message becomes input tokens verbatim.
+class TestChatSpendLimits:
+    """It bills the Anthropic key on every call, and the message becomes
+    input tokens verbatim."""
+
+    @pytest.fixture(autouse=True)
+    def _clear(self, server_mod):
+        server_mod._chat_calls.clear()
+        yield
+        server_mod._chat_calls.clear()
+
+    def test_a_long_message_is_refused_before_it_reaches_claude(self, dj, server_mod):
+        with patch.object(server_mod, "call_claude") as claude:
+            with pytest.raises(server_mod.cherrypy.HTTPError) as exc:
+                dj.chat(message="A" * (server_mod.MAX_CHAT_MESSAGE_CHARS + 1))
+        assert exc.value.status == 400
+        claude.assert_not_called()   # a rejected message must not be paid for
+
+    def test_a_normal_message_is_allowed(self, dj, server_mod):
+        with patch.object(server_mod, "call_claude", return_value=None):
+            result = dj.chat(message="play something chill")
+        assert "error" in result and "not configured" in result["error"]
+
+    def test_a_message_at_exactly_the_limit_is_allowed(self, dj, server_mod):
+        with patch.object(server_mod, "call_claude", return_value=None) as claude:
+            dj.chat(message="A" * server_mod.MAX_CHAT_MESSAGE_CHARS)
+        claude.assert_called_once()
+
+    def test_the_rate_limit_bites(self, dj, server_mod, monkeypatch):
+        monkeypatch.setattr(server_mod, "CHAT_CALLS_PER_MINUTE", 3)
+        with patch.object(server_mod, "call_claude", return_value=None):
+            for _ in range(3):
+                dj.chat(message="hi", session_id="s1")
+            with pytest.raises(server_mod.cherrypy.HTTPError) as exc:
+                dj.chat(message="hi", session_id="s1")
+        assert exc.value.status == 429
+
+    def test_the_429_says_how_long_to_wait(self, dj, server_mod, monkeypatch):
+        monkeypatch.setattr(server_mod, "CHAT_CALLS_PER_MINUTE", 1)
+        with patch.object(server_mod, "call_claude", return_value=None):
+            dj.chat(message="hi", session_id="s2")
+            with pytest.raises(server_mod.cherrypy.HTTPError) as exc:
+                dj.chat(message="hi", session_id="s2")
+        assert re.search(r"try again in \d+s", str(exc.value))
+
+    def test_the_429_sets_retry_after(self, dj, server_mod, monkeypatch):
+        """The message is for the person; the header is for anything scripted."""
+        monkeypatch.setattr(server_mod, "CHAT_CALLS_PER_MINUTE", 1)
+        with patch.object(server_mod, "call_claude", return_value=None):
+            dj.chat(message="hi", session_id="s3")
+            with pytest.raises(server_mod.cherrypy.HTTPError):
+                dj.chat(message="hi", session_id="s3")
+        assert int(server_mod.cherrypy.response.headers["Retry-After"]) >= 1
+
+    def test_a_rate_limited_call_never_reaches_claude(self, dj, server_mod, monkeypatch):
+        monkeypatch.setattr(server_mod, "CHAT_CALLS_PER_MINUTE", 1)
+        with patch.object(server_mod, "call_claude", return_value=None) as claude:
+            dj.chat(message="hi", session_id="s4")
+            with pytest.raises(server_mod.cherrypy.HTTPError):
+                dj.chat(message="hi", session_id="s4")
+        assert claude.call_count == 1
+
+    def test_one_session_cannot_exhaust_another(self, dj, server_mod, monkeypatch):
+        """Otherwise one guest hammering the page locks out the whole party."""
+        monkeypatch.setattr(server_mod, "CHAT_CALLS_PER_MINUTE", 2)
+        with patch.object(server_mod, "call_claude", return_value=None):
+            for _ in range(2):
+                dj.chat(message="hi", session_id="noisy")
+            dj.chat(message="hi", session_id="quiet")  # must not raise
+
+    def test_the_window_slides_rather_than_resetting_on_the_minute(self, dj, server_mod,
+                                                                   monkeypatch):
+        """A fixed window would let a caller take a double allowance by
+        straddling the boundary."""
+        monkeypatch.setattr(server_mod, "CHAT_CALLS_PER_MINUTE", 2)
+        clock = [1000.0]
+        monkeypatch.setattr(server_mod.time, "monotonic", lambda: clock[0])
+        with patch.object(server_mod, "call_claude", return_value=None):
+            dj.chat(message="hi", session_id="s5")
+            clock[0] += 59
+            dj.chat(message="hi", session_id="s5")
+            with pytest.raises(server_mod.cherrypy.HTTPError):
+                dj.chat(message="hi", session_id="s5")
+
+            clock[0] += 2          # the first call ages out, the second has not
+            dj.chat(message="hi", session_id="s5")
+
+    def test_the_call_log_is_bounded(self, dj, server_mod, monkeypatch):
+        """A public URL means every distinct session_id the UI invents becomes
+        a key, exactly as the search-result cache once did."""
+        monkeypatch.setattr(server_mod, "MAX_CHAT_SESSIONS", 10)
+        with patch.object(server_mod, "call_claude", return_value=None):
+            for i in range(50):
+                dj.chat(message="hi", session_id=f"s{i}")
+        assert len(server_mod._chat_calls) <= 10
+
+
+# ==================== a typo should not be a 500 ==========================

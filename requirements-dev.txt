@@ -1,0 +1,15 @@
+# Test dependencies. The suite needs no network, credentials or Sonos.
+#
+#   ./venv/bin/pip install -r requirements.txt -r requirements-dev.txt
+#   ./venv/bin/python -m pytest
+
+-r requirements.txt
+
+pytest==9.1.1
+pytest-cov==7.1.0
+
+# Used directly by test_claude.py and test_logging.py to build the Request and
+# Response objects the Anthropic SDK's typed exceptions carry. It arrives as a
+# dependency of anthropic, but it is named here too: a test importing a package
+# it never asked for breaks silently the day that package stops being pulled in.
+httpx==0.28.1

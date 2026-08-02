@@ -31,14 +31,6 @@ def _tm(hour, minute, wday=0, days_later=0):
     )
 
 
-@pytest.fixture(autouse=True)
-def _isolate(server_mod, tmp_path, monkeypatch):
-    """Never touch the real schedules.json."""
-    monkeypatch.setattr(server_mod, "SCHEDULES_PATH", str(tmp_path / "schedules.json"))
-    monkeypatch.setattr(server_mod, "_schedules", [])
-    yield
-
-
 def _step(action="pause", offset=0, **kw):
     step = {"offset": offset, "action": action, "last_fired": kw.pop("last_fired", None)}
     step.update(kw)

@@ -125,3 +125,39 @@ class TestEndToEndThroughHandlers:
             with pytest.raises(server_mod.cherrypy.HTTPError) as exc:
                 dj.create_playlist(name="Party")
         assert exc.value.status == 502
+
+
+# The decorator has to leave the handler's signature readable, not just its
+# behaviour intact.
+class TestUnexpectedParametersAre404:
+    """CherryPy reads the handler's signature with inspect.getfullargspec,
+    which does not follow the __wrapped__ chain functools.wraps sets. Every
+    handler wrapped in _handles_spotify_errors therefore looked like
+    (*args, **kwargs): an unknown parameter was accepted, then blew up inside
+    the call as a 500 with a stack trace."""
+
+    DECORATED = ["my", "like", "recommend", "album_tracks",
+                 "create_playlist", "add_to_playlist"]
+
+    @pytest.mark.parametrize("name", DECORATED)
+    def test_the_signature_survives_the_decorator(self, server_mod, name):
+        import inspect
+        spec = inspect.getfullargspec(getattr(server_mod.DJServer, name))
+        assert spec.varkw is None, f"{name} still accepts arbitrary kwargs"
+        assert spec.args[0] == "self"
+
+    @pytest.mark.parametrize("name", DECORATED)
+    def test_the_declared_parameters_are_the_real_ones(self, server_mod, name):
+        """A signature that survives but is wrong would reject valid calls."""
+        import inspect
+        handler = getattr(server_mod.DJServer, name)
+        assert inspect.getfullargspec(handler).args == \
+            inspect.getfullargspec(handler.__wrapped__).args
+
+    def test_an_undecorated_handler_is_unaffected(self, server_mod):
+        import inspect
+        spec = inspect.getfullargspec(server_mod.DJServer.nowplaying)
+        assert spec.varkw is None
+
+
+# ==================== input bounds =======================================

@@ -1,0 +1,19 @@
+# Runtime dependencies, pinned to what the server is actually running on.
+#
+# The README used to say `pip install spotipy cherrypy anthropic requests`,
+# which reinstalls whatever is current the day you run it -- a rebuild after a
+# breaking major release gives you a server that no longer starts, and nothing
+# records what the working combination was.
+#
+#   ./venv/bin/pip install -r requirements.txt
+#
+# Needs Python 3.10 or newer -- requests 2.34.2 and pytest 9 both require it.
+# That is worth stating because macOS still ships 3.9 as /usr/bin/python3, so
+# a plain `python3 -m venv venv` here builds an environment these pins cannot
+# install into, and pip reports it as "no matching distribution" rather than
+# as a version problem. This is running on 3.13.14.
+
+anthropic==0.120.2
+CherryPy==18.10.0
+requests==2.34.2
+spotipy==2.26.0

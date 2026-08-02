@@ -13,13 +13,6 @@ import json
 import pytest
 
 
-@pytest.fixture(autouse=True)
-def _isolate(server_mod, tmp_path, monkeypatch):
-    monkeypatch.setattr(server_mod, "SCHEDULES_PATH", str(tmp_path / "s.json"))
-    monkeypatch.setattr(server_mod, "_schedules", [])
-    yield
-
-
 WAKE = dict(
     time="06:00", days=[0, 1, 2, 3, 4], label="wake-up",
     steps=[
@@ -269,3 +262,21 @@ class TestStepsCarryTheirClockTime:
         save_schedule(**WAKE)
         assert [s["offset"] for s in server_mod._schedules[0]["steps"]] == [0, 1, 75]
         assert "at" not in server_mod._schedules[0]["steps"][0]
+
+
+# The only endpoint taking a JSON body, so the body limit is tested here.
+class TestRequestBodyIsBounded:
+    def test_a_limit_is_configured(self, server_mod):
+        """CherryPy defaults to 100MB; a 38MB body was buffered and parsed."""
+        assert server_mod.MAX_REQUEST_BODY_BYTES <= 1024 * 1024
+
+    def test_the_limit_still_fits_the_largest_real_routine(self, server_mod):
+        """A routine with the maximum number of steps must not be refused."""
+        import json
+        biggest = {
+            "time": "06:00", "days": [0, 1, 2, 3, 4, 5, 6], "label": "A" * 80,
+            "steps": [{"offset": i, "action": "play",
+                       "uri": "spotify:playlist:" + "a" * 22, "volume": 100}
+                      for i in range(server_mod.MAX_STEPS)],
+        }
+        assert len(json.dumps(biggest).encode()) < server_mod.MAX_REQUEST_BODY_BYTES
