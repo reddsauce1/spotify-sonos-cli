@@ -58,3 +58,5 @@ adding features stops being risky — fill this in then.
 - [x] queue view showing played / current / upcoming, windowed for long queues
 - [x] drag-to-reorder and remove, guarded against the queue shifting underneath
 - [x] light mode, following the OS with a manual override, contrast-tested
+- [x] playback seek bar, ticking locally between polls
+- [x] album results in search, expandable in place to reveal their tracks

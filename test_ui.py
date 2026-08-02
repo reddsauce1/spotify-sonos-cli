@@ -311,14 +311,23 @@ class TestTracksAddressedByUri:
         assert "uri: sheetTrackUri" in markup
         assert "num: sheetTrackNum" not in markup
 
-    def test_artwork_does_not_come_from_album_tracks(self, markup):
-        """album_tracks writes to the shared slot, so polling it for artwork
-        silently replaced the user's search results every 10 seconds.
+    def test_the_nowplaying_poll_does_not_call_album_tracks(self, markup):
+        """Polling album_tracks for artwork silently replaced the user's
+        search results every 10 seconds.
 
-        Checks for a call, not the string -- the comments explaining this
-        mention the endpoint by name."""
-        assert "fetch('/album_tracks" not in markup
-        assert 'fetch("/album_tracks' not in markup
+        Scoped to the poll: expanding an album in the search results is a
+        legitimate, user-initiated call to the same endpoint."""
+        poll = markup.split("function refreshNowPlaying(", 1)[1].split("\n  }", 1)[0]
+        # A call, not the word: the comment inside this function explains the
+        # rule and names the endpoint.
+        assert "fetch('/album_tracks" not in poll
+
+    def test_album_expansion_is_user_initiated(self, markup):
+        """The one place album_tracks is called is behind a click."""
+        calls = [l for l in markup.splitlines() if "fetch('/album_tracks" in l]
+        assert len(calls) == 1, calls
+        expand = markup.split("function toggleAlbum(", 1)[1].split("\n  }", 1)[0]
+        assert "album_tracks" in expand
 
     def test_artwork_comes_from_nowplaying(self, markup):
         np = markup.split("function refreshNowPlaying(", 1)[1].split("\n  }", 1)[0]

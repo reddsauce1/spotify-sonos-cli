@@ -259,6 +259,21 @@
   }
   .group:first-child { margin-top: 0; }
 
+  /* album rows + their expanded tracks */
+  .alb-art {
+    width: 34px; height: 34px; border-radius: 4px; flex-shrink: 0; object-fit: cover;
+    background: linear-gradient(140deg, var(--amber-2), var(--panel-2));
+  }
+  .alb-toggle {
+    background: none; border: 0; color: var(--muted); font-size: 12px;
+    width: 20px; flex-shrink: 0; transition: transform .15s;
+  }
+  .alb-toggle.open { transform: rotate(90deg); color: var(--amber); }
+  .alb-tracks { display: none; padding-left: 18px; border-left: 2px solid var(--line); margin-left: 14px; }
+  .alb-tracks.open { display: block; }
+  .alb-tracks .row { padding: 6px 8px; }
+  @media (prefers-reduced-motion: reduce) { .alb-toggle { transition: none; } }
+
   /* draggable queue rows */
   .row[draggable="true"] { cursor: grab; }
   .row.dragging { opacity: .4; }
@@ -663,15 +678,24 @@
   }
 
   // ---- Search -----------------------------------------------------------
+  // One query, two searches. Albums appear above tracks and expand in place,
+  // which is why there is no type selector: the field filters (album:,
+  // artist:, year:) still work and the results stay in one list.
   function doSearch() {
     const q = document.getElementById('q').value.trim();
     if (!q) return;
     document.getElementById('status').textContent = 'Searching…';
-    fetch('/search?q=' + encodeURIComponent(q)).then(r => r.json()).then(data => {
-      if (data.error) { document.getElementById('status').textContent = '❌ ' + data.error; return; }
-      const n = (data.results || []).length;
-      document.getElementById('status').textContent = n + ' result' + (n === 1 ? '' : 's');
-      showResults(data.results || []);
+    Promise.all([
+      fetch('/search?q=' + encodeURIComponent(q) + '&type=album&limit=5').then(r => r.json()),
+      fetch('/search?q=' + encodeURIComponent(q) + '&type=track&limit=12').then(r => r.json()),
+    ]).then(([albums, tracks]) => {
+      const err = albums.error || tracks.error;
+      if (err) { document.getElementById('status').textContent = '❌ ' + err; return; }
+      const a = albums.results || [], t = tracks.results || [];
+      document.getElementById('status').textContent =
+        a.length + ' album' + (a.length === 1 ? '' : 's') + ' · ' +
+        t.length + ' track' + (t.length === 1 ? '' : 's');
+      renderSearch(a, t);
     });
   }
 
@@ -688,14 +712,47 @@
     });
   }
 
-  function showResults(results) {
-    document.getElementById('results').innerHTML = results.map(item =>
-      '<div class="row">' +
+  function renderSearch(albums, tracks) {
+    let html = '';
+    if (albums.length) {
+      html += '<div class="group">Albums</div>' + albums.map(renderAlbumRow).join('');
+    }
+    if (tracks.length) {
+      html += '<div class="group">Tracks</div>' +
+        tracks.map(t => trackRow(t, false)).join('');
+    }
+    document.getElementById('results').innerHTML = html || '<div class="empty">No results.</div>';
+  }
+
+  function renderAlbumRow(a) {
+    const key = a.uri.replace(/[^a-zA-Z0-9]/g, '');
+    return '<div class="row">' +
+        '<button class="alb-toggle" id="tog-' + key + '" title="Show tracks" ' +
+          'onclick="toggleAlbum(\'' + escapeHtml(a.uri) + '\')">▶</button>' +
+        (a.artwork
+          ? '<img class="alb-art" alt="" src="' + escapeHtml(a.artwork) + '">'
+          : '<span class="alb-art"></span>') +
+        '<div class="row-body">' +
+          '<div class="row-title">' + escapeHtml(a.name) + '</div>' +
+          '<div class="row-sub">' + escapeHtml(a.artist) +
+            (a.year ? ' · ' + escapeHtml(a.year) : '') +
+            ' · ' + escapeHtml(String(a.tracks)) + ' tracks</div>' +
+        '</div>' +
+        '<div class="row-acts">' +
+          '<button class="abtn go" title="Play album" onclick="playUri(\'' + escapeHtml(a.uri) + '\')">▶</button>' +
+          '<button class="abtn" title="Queue album" onclick="queueUri(\'' + escapeHtml(a.uri) + '\')">＋</button>' +
+        '</div>' +
+      '</div>' +
+      '<div class="alb-tracks" id="alb-' + key + '"></div>';
+  }
+
+  function trackRow(item, nested) {
+    return '<div class="row">' +
         '<div class="row-num">' + escapeHtml(String(item.num)) + '</div>' +
         '<div class="row-body">' +
           '<div class="row-title">' + escapeHtml(item.name) + '</div>' +
           '<div class="row-sub">' + escapeHtml(item.artist) +
-            (item.album ? ' · ' + escapeHtml(item.album) : '') + '</div>' +
+            (!nested && item.album ? ' · ' + escapeHtml(item.album) : '') + '</div>' +
         '</div>' +
         '<div class="row-acts">' +
           '<button class="abtn go" title="Play now" onclick="trackAction(\'' + escapeHtml(item.uri) + '\', \'play\')">▶</button>' +
@@ -703,14 +760,37 @@
           '<button class="abtn" title="Add to queue" onclick="trackAction(\'' + escapeHtml(item.uri) + '\', \'queue\')">＋</button>' +
           '<button class="abtn" title="Add to playlist" onclick="openAddToPlaylist(\'' + escapeHtml(item.uri) + '\')">☰</button>' +
         '</div>' +
-      '</div>'
-    ).join('') || '<div class="empty">No results.</div>';
+      '</div>';
   }
 
-  // Addressed by uri, never by row number. The server's numbered results are
-  // one global slot shared by search, playlists, liked, recommend and
-  // album_tracks -- so a number means "row N of whatever wrote to that slot
-  // last", which is not necessarily what is on screen.
+  // Track lists are fetched once and kept, so collapsing and reopening an
+  // album does not hit Spotify again.
+  const ALBUM_CACHE = {};
+
+  function toggleAlbum(uri) {
+    const key = uri.replace(/[^a-zA-Z0-9]/g, '');
+    const panel = document.getElementById('alb-' + key);
+    const toggle = document.getElementById('tog-' + key);
+    const opening = !panel.classList.contains('open');
+    panel.classList.toggle('open', opening);
+    toggle.classList.toggle('open', opening);
+    if (!opening || ALBUM_CACHE[uri]) return;
+
+    panel.innerHTML = '<div class="empty">Loading…</div>';
+    fetch('/album_tracks?uri=' + encodeURIComponent(uri))
+      .then(r => r.json()).then(data => {
+        if (data.error) { panel.innerHTML = '<div class="empty">❌ ' + escapeHtml(data.error) + '</div>'; return; }
+        ALBUM_CACHE[uri] = data.tracks || [];
+        panel.innerHTML = ALBUM_CACHE[uri].map(t => trackRow(t, true)).join('')
+          || '<div class="empty">No tracks.</div>';
+      });
+  }
+
+  function showResults(results) {   // still used by the Ask path
+    document.getElementById('results').innerHTML =
+      results.map(t => trackRow(t, false)).join('') || '<div class="empty">No results.</div>';
+  }
+
   function trackAction(uri, action) {
     fetch('/' + action + '?uri=' + encodeURIComponent(uri)).then(r => r.json()).then(data => {
       if (data.error) { showToast('❌ ' + data.error); return; }

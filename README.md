@@ -124,7 +124,10 @@ dj help
 | `/my/liked` | Your liked songs |
 | `/like` | Like current track |
 | `/recommend?based_on=nowplaying` | Top tracks from current artist |
-| `/album_tracks?based_on=nowplaying` | Album tracks for current song |
+| `/album_tracks?based_on=nowplaying` | Album tracks for the current song |
+| `/album_tracks?uri=spotify:album:…` | Tracks of a named album |
+| `/search?q=&type=album` | Album results (also `artist`, `playlist`) |
+| `/seek?to=<seconds>` | Jump to a position in the current track |
 | `/create_playlist?name=<name>` | Create new playlist |
 | `/add_to_playlist?playlist_id=<id>&num=<n>` | Add track to playlist |
 
@@ -526,6 +529,25 @@ What is *not* possible is generating a radio URI for a track from inside the
 app. That needs `/v1/recommendations` or `/v1/artists/{id}/related-artists`,
 both withdrawn from third-party apps in November 2024 — they return 404 here.
 `artist_top_tracks` still works, which is what `/recommend` uses.
+
+## Searching
+
+One query runs both an album and a track search, so results come back as
+**Albums** above **Tracks**. Click the ▸ on an album to expand its tracks in
+place; the album row itself plays or queues the whole thing.
+
+Spotify's field filters work in the same box, which is why there is no type
+selector in the way:
+
+```
+album:Rumours
+artist:"Fleetwood Mac" album:Rumours
+year:1977 album:Rumours
+```
+
+Expanding an album deliberately does **not** update the server's numbered
+results, so doing it in the browser cannot change what `dj play 3` means in a
+terminal alongside.
 
 ## Building playlists
 

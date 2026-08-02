@@ -1405,6 +1405,30 @@ class DJServer:
                 }
                 output.append(item)
 
+        elif type == "album":
+            for i, album in enumerate(results['albums']['items'], 1):
+                output.append({
+                    "num": i,
+                    "name": album['name'],
+                    "artist": album['artists'][0]['name'] if album.get('artists') else '',
+                    "tracks": album.get('total_tracks', 0),
+                    "year": (album.get('release_date') or '')[:4],
+                    "artwork": album['images'][0]['url'] if album.get('images') else None,
+                    "uri": album['uri'],
+                })
+
+        elif type == "playlist":
+            # Spotify can return null entries here; skip rather than crash.
+            for i, pl in enumerate(
+                    [p for p in results['playlists']['items'] if p], 1):
+                output.append({
+                    "num": i,
+                    "name": pl['name'],
+                    "artist": (pl.get('owner') or {}).get('display_name', ''),
+                    "tracks": (pl.get('tracks') or {}).get('total', 0),
+                    "uri": pl['uri'],
+                })
+
         set_results(output, session_id)
         return {"query": q, "type": type, "results": output}
 
@@ -1810,11 +1834,37 @@ class DJServer:
     @cherrypy.expose
     @cherrypy.tools.json_out()
     @_handles_spotify_errors
-    def album_tracks(self, based_on=None):
-        """Get all tracks from the current song's album"""
-        
+    def album_tracks(self, based_on=None, uri=None):
+        """List an album's tracks.
+
+        Either name the album (`uri=spotify:album:...`), which is what the
+        search results do when you expand one, or ask for whatever is playing
+        (`based_on=nowplaying`).
+        """
+        if uri:
+            album_id = _validate_uri(uri).split(':')[-1]
+            album = sp.album(album_id)
+            output = [{
+                "num": i,
+                "name": t['name'],
+                "artist": t['artists'][0]['name'] if t.get('artists') else '',
+                "uri": t['uri'],
+                "duration_ms": t.get('duration_ms'),
+            } for i, t in enumerate(album['tracks']['items'], 1)]
+            # Deliberately NOT stored as the numbered results: expanding an
+            # album in the UI should not silently change what "play number 3"
+            # means for a CLI session running alongside it.
+            return {
+                "album": album['name'],
+                "artist": album['artists'][0]['name'] if album.get('artists') else '',
+                "artwork": album['images'][0]['url'] if album.get('images') else None,
+                "year": (album.get('release_date') or '')[:4],
+                "uri": album['uri'],
+                "tracks": output,
+            }
+
         if based_on != "nowplaying":
-            return {"error": "Use /album_tracks?based_on=nowplaying"}
+            return {"error": "Use /album_tracks?based_on=nowplaying or ?uri=spotify:album:..."}
         
         # Get currently playing track
         state = self._sonos_request("state")
