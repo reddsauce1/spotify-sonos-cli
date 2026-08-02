@@ -438,8 +438,13 @@ block rather than a sweep through the stylesheet — tests assert that no
 hard-coded colour creeps back in, that light and dark define the same token
 set, and that every text/background pair clears WCAG AA (4.5:1) in both.
 
-Light is not an inversion: the amber accent darkens so it still reads on a
-pale ground, and takes white text instead of near-black.
+Each theme has two accents. Dark uses a pale green with a faint pink; light
+uses a chocolate brown with a green. The second accent means "here / now" —
+the track playing in the queue, and today's column in the week view — rather
+than being decoration sprinkled about.
+
+Light is not an inversion: its accents are darker so they still read on a pale
+ground, and take white text rather than near-black.
 
 ## The queue
 
