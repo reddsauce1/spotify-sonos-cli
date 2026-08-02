@@ -5,6 +5,7 @@ from spotipy.exceptions import SpotifyBaseException, SpotifyException
 from spotipy.oauth2 import SpotifyOAuth, SpotifyOauthError
 import requests
 import functools
+import inspect
 import datetime
 import json
 import logging
@@ -69,6 +70,16 @@ DEFAULTS = {
     "max_schedules": 50,
     "max_steps_per_schedule": 20,
     "max_stations": 50,
+    # /chat bills the Anthropic key on every call, so these are a spend limit
+    # as much as a load limit. 500 characters is a long spoken request; 20 a
+    # minute is far more than a person types and far less than a loop.
+    "max_chat_message_chars": 500,
+    "chat_calls_per_minute": 20,
+    "max_chat_sessions": 100,
+    # Largest legitimate body is a routine with the maximum number of steps,
+    # which is a few kilobytes. CherryPy defaults to 100MB, and a 38MB body
+    # was accepted and parsed.
+    "max_request_body_bytes": 262144,
     # 12h: enough for a wind-down that starts in the evening and ends after
     # midnight, without letting an offset drift into ambiguity.
     "max_step_offset_minutes": 720,
@@ -199,8 +210,17 @@ PUBLIC_PATHS = {'', '/index', '/ui', '/login'}
 # data is scratch state for "play number 3", not anything worth persisting.
 search_results = {}
 
+# CherryPy serves requests on a thread pool, so two guests searching at once
+# run this concurrently, and the expiry sweep is not safe under that. It
+# iterates the dict to find stale entries -- one thread inserting mid-iteration
+# raises "dictionary changed size during iteration" -- and then picks the
+# oldest key and deletes it, a check-then-act where both threads can choose
+# the same key and the second raises KeyError. Reproduced with a short thread
+# switch interval; see test_hardening_sweep.py.
+_results_lock = threading.Lock()
 
-def _expire_search_results():
+
+def _expire_search_results_locked():
     """Drop stale sessions, then oldest-first if still over the cap."""
     now = time.monotonic()
     for session_id in [
@@ -520,6 +540,44 @@ _schedules = _load_schedules()
 
 STATIONS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'stations.json')
 MAX_STATIONS = _setting('max_stations')
+MAX_CHAT_MESSAGE_CHARS = _setting('max_chat_message_chars')
+CHAT_CALLS_PER_MINUTE = _setting('chat_calls_per_minute')
+MAX_CHAT_SESSIONS = _setting('max_chat_sessions')
+MAX_REQUEST_BODY_BYTES = _setting('max_request_body_bytes')
+
+# Per-session call times for /chat, as {session_id: [monotonic, ...]}.
+_chat_calls = {}
+_chat_lock = threading.Lock()
+
+
+def _check_chat_rate(session_id):
+    """Allow CHAT_CALLS_PER_MINUTE per session per minute, or abort with 429.
+
+    /chat is the only endpoint that costs money -- it bills the Anthropic key
+    on every call -- so this is a spend limit first and a load limit second.
+    A sliding window rather than a fixed one, so a caller cannot get a double
+    allowance by straddling a minute boundary.
+    """
+    now = time.monotonic()
+    with _chat_lock:
+        recent = [t for t in _chat_calls.get(session_id, []) if now - t < 60]
+        if len(recent) >= CHAT_CALLS_PER_MINUTE:
+            _chat_calls[session_id] = recent
+            wait = max(1, int(60 - (now - recent[0])) + 1)
+            _too_many_requests(
+                f"Too many requests -- try again in {wait}s", wait)
+
+        recent.append(now)
+        _chat_calls[session_id] = recent
+
+        # Bounded like search_results: every distinct session_id the UI sends
+        # creates an entry, and a public URL means an unbounded dict.
+        if len(_chat_calls) > MAX_CHAT_SESSIONS:
+            for stale in [s for s, times in _chat_calls.items() if not times
+                          or now - times[-1] > 60]:
+                del _chat_calls[stale]
+            while len(_chat_calls) > MAX_CHAT_SESSIONS:
+                del _chat_calls[min(_chat_calls, key=lambda s: _chat_calls[s][-1])]
 
 _stations_lock = threading.Lock()
 _stations = []
@@ -664,6 +722,57 @@ def _bad_request(message):
     raise cherrypy.HTTPError(400, message)
 
 
+def _too_many_requests(message, retry_after):
+    """Abort with a 429, telling the caller how long to wait.
+
+    Retry-After is set as well as being in the message: the UI shows the
+    message, but anything scripted should be able to read the header.
+    """
+    cherrypy.response.headers['Retry-After'] = str(retry_after)
+    raise cherrypy.HTTPError(429, message)
+
+
+def _json_body():
+    """Read and parse the request body as a JSON object, or abort with 400.
+
+    Parsed here rather than by cherrypy.tools.json_in because that tool
+    catches ValueError only. json.loads recurses per nesting level, and a
+    deeply nested body raises RecursionError -- which is a RuntimeError, so it
+    escaped as a 500. Reading the body directly also keeps the size check
+    next to the parse.
+    """
+    raw = cherrypy.request.body.read()
+    if len(raw) > MAX_REQUEST_BODY_BYTES:
+        _bad_request(f"body must be at most {MAX_REQUEST_BODY_BYTES} bytes")
+    try:
+        parsed = json.loads(raw)
+    except RecursionError:
+        _bad_request("body is nested too deeply")
+    except (ValueError, UnicodeDecodeError):
+        _bad_request("body must be valid JSON")
+    if not isinstance(parsed, dict):
+        _bad_request("expected a JSON object")
+    return parsed
+
+
+def _validate_text(value, field, max_length):
+    """Return a stripped string, or abort with 400.
+
+    Rejects rather than truncates: a silently shortened playlist name is a
+    playlist the caller did not ask for. Control characters are refused
+    outright -- they are never meant, and a NUL in a search query came back
+    from Spotify as a 502, blaming the upstream for the caller's input.
+    """
+    text = (value or '').strip()
+    if not text:
+        _bad_request(f"{field} is required")
+    if len(text) > max_length:
+        _bad_request(f"{field} must be at most {max_length} characters")
+    if any(ch < ' ' or ch == '\x7f' for ch in text):
+        _bad_request(f"{field} must not contain control characters")
+    return text
+
+
 def _validate_uri(uri):
     """Reject anything that is not a literal Spotify URI.
 
@@ -734,19 +843,29 @@ def _handles_spotify_errors(fn):
         except requests.exceptions.RequestException as exc:
             raise cherrypy.HTTPError(502, f"Could not reach Spotify: {exc}")
 
+    # CherryPy decides whether a query parameter is expected by reading the
+    # handler's signature with inspect.getfullargspec, which -- unlike
+    # inspect.signature -- does not follow the __wrapped__ chain that
+    # functools.wraps sets. So a decorated handler looked like (*args,
+    # **kwargs): every parameter was accepted, and an unknown one became a
+    # TypeError inside the call, i.e. a 500 with a stack trace instead of the
+    # 404 an undecorated endpoint gives. getfullargspec does honour an
+    # explicit __signature__.
+    wrapper.__signature__ = inspect.signature(fn)
     return wrapper
 
 def get_results(session_id='global'):
     """Get search results for a session, or [] if absent or expired."""
-    entry = search_results.get(session_id)
-    if entry is None:
-        return []
+    with _results_lock:
+        entry = search_results.get(session_id)
+        if entry is None:
+            return []
 
-    stored_at, results = entry
-    if time.monotonic() - stored_at > SEARCH_RESULT_TTL:
-        del search_results[session_id]
-        return []
-    return results
+        stored_at, results = entry
+        if time.monotonic() - stored_at > SEARCH_RESULT_TTL:
+            del search_results[session_id]
+            return []
+        return results
 
 
 def set_results(results, session_id='global'):
@@ -755,8 +874,9 @@ def set_results(results, session_id='global'):
     The sweep runs *after* the insert: sweeping first trims to the cap and
     then adds one more, so the dict settles at MAX_SEARCH_SESSIONS + 1.
     """
-    search_results[session_id] = (time.monotonic(), results)
-    _expire_search_results()
+    with _results_lock:
+        search_results[session_id] = (time.monotonic(), results)
+        _expire_search_results_locked()
 
 
 def call_claude(message, session_id='global'):
@@ -1108,7 +1228,6 @@ class DJServer:
 
     @cherrypy.expose
     @cherrypy.tools.json_out()
-    @cherrypy.tools.json_in()
     @cherrypy.tools.allow(methods=['POST'])
     def schedule_save(self, **_):
         """Create or replace a whole routine in one request.
@@ -1120,9 +1239,7 @@ class DJServer:
         Taking the entire routine at once makes editing possible and makes
         every save atomic.
         """
-        body = cherrypy.request.json
-        if not isinstance(body, dict):
-            _bad_request("expected a JSON object")
+        body = _json_body()
 
         days = body.get('days')
         if isinstance(days, (list, tuple)):
@@ -1277,6 +1394,13 @@ class DJServer:
     def chat(self, message=None, session_id='global'):
         if not message:
             return {"error": "No message provided", "message": "Please say something!"}
+
+        # Both guards are about spend: the message becomes input tokens
+        # verbatim, and nothing else on the server costs anything to call.
+        if len(message) > MAX_CHAT_MESSAGE_CHARS:
+            _bad_request(
+                f"Message too long -- keep it under {MAX_CHAT_MESSAGE_CHARS} characters")
+        _check_chat_rate(session_id)
         
         # Get Claude's interpretation
         claude_response = call_claude(message, session_id)
@@ -1457,6 +1581,9 @@ class DJServer:
     def _do_search(self, q, type="track", limit=None, session_id='global'):
         if limit is None:
             limit = SEARCH_LIMIT
+        # A NUL or other control character reached Spotify and came back as a
+        # 502; it is the caller's mistake, not the upstream's.
+        q = _validate_text(q, "q", 200)
         results = sp.search(q=q, type=type, limit=_validate_int(limit, "limit", 1, 50))
         output = []
 
@@ -1873,11 +2000,12 @@ class DJServer:
     @cherrypy.tools.allow(methods=['POST'])
     @_handles_spotify_errors
     def create_playlist(self, name=None):
-        if not name:
-            _bad_request("Provide playlist name: /create_playlist?name=My%20Playlist")
-        
+        # Bounded like a station name. Unbounded, a long one reached Spotify
+        # and came back as a 502 -- an upstream failure for what is really a
+        # bad request.
+        clean_name = _validate_text(name, "name", 80)
         user_id = sp.current_user()['id']
-        playlist = sp.user_playlist_create(user_id, name, public=False)
+        playlist = sp.user_playlist_create(user_id, clean_name, public=False)
         return {
             "status": "created",
             "name": playlist['name'],
@@ -2033,7 +2161,11 @@ if __name__ == '__main__':
 
     cherrypy.config.update({
         'server.socket_host': '0.0.0.0',
-        'server.socket_port': _setting('server_port')
+        'server.socket_port': _setting('server_port'),
+        # CherryPy defaults to 100MB. The largest legitimate body here is a
+        # routine with the maximum number of steps, a few kilobytes; a 38MB
+        # body was accepted, buffered and parsed.
+        'server.max_request_body_size': MAX_REQUEST_BODY_BYTES
     })
 
     dj_server = DJServer()

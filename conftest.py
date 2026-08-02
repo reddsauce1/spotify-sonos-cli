@@ -81,12 +81,15 @@ def server_mod():
 def save_schedule(dj, monkeypatch):
     """Create or replace a routine the way the browser does.
 
-    schedule_save reads a JSON body off cherrypy.request rather than taking
-    form parameters, because a routine carries a list of steps. Several test
-    modules need to stand a routine up before testing something else, so the
-    plumbing lives here rather than being repeated in each of them.
+    schedule_save reads and parses the raw body rather than taking form
+    parameters, because a routine carries a list of steps. Feeding it real
+    bytes rather than a pre-parsed dict means the tests exercise the size
+    check and the parse guards too. Several test modules need to stand a
+    routine up before testing something else, so the plumbing lives here
+    rather than being repeated in each of them.
     """
     def _save(**body):
-        monkeypatch.setattr(cherrypy.request, "json", body, raising=False)
+        monkeypatch.setattr(cherrypy.request, "body",
+                            io.BytesIO(json.dumps(body).encode()), raising=False)
         return dj.schedule_save()
     return _save

@@ -7,6 +7,7 @@ routine was live and armed between calls, and there was no way to change an
 existing one at all. Correcting 06:00 to 06:30 meant deleting and rebuilding.
 """
 import datetime
+import io
 import json
 
 import pytest
@@ -159,12 +160,38 @@ class TestValidation:
         assert save_schedule(id=a["id"], time="06:30", days=[], label="a",
                     steps=[])["status"] == "updated"
 
-    def test_a_non_object_body_is_400(self, dj, server_mod, monkeypatch):
-        monkeypatch.setattr(server_mod.cherrypy.request, "json",
-                            ["not", "an", "object"], raising=False)
+    @pytest.mark.parametrize("raw,why", [
+        (b'["not", "an", "object"]', "a JSON array"),
+        (b'"just a string"', "a bare string"),
+        (b'null', "null"),
+        (b'{not json at all', "malformed"),
+        (b'', "empty"),
+        (b'[' * 60000 + b']' * 60000, "nested too deeply"),
+        (b'\xff\xfe not utf-8', "undecodable bytes"),
+    ])
+    def test_a_body_that_is_not_an_object_is_400(self, dj, server_mod,
+                                                 monkeypatch, raw, why):
+        """The deep-nesting case is the one that used to escape: json.loads
+        recurses per level and raises RecursionError, which is a RuntimeError
+        rather than a ValueError, so it surfaced as a 500."""
+        monkeypatch.setattr(server_mod.cherrypy.request, "body",
+                            io.BytesIO(raw), raising=False)
+        with pytest.raises(server_mod.cherrypy.HTTPError) as exc:
+            dj.schedule_save()
+        assert exc.value.status == 400, why
+
+    def test_an_oversized_body_is_refused_before_parsing(self, dj, server_mod,
+                                                         monkeypatch):
+        """CherryPy caps this at the socket too; the check here means the
+        limit still holds for anything reaching the handler another way."""
+        monkeypatch.setattr(server_mod, "MAX_REQUEST_BODY_BYTES", 1024)
+        monkeypatch.setattr(server_mod.cherrypy.request, "body",
+                            io.BytesIO(b'{"time": "' + b'A' * 5000 + b'"}'),
+                            raising=False)
         with pytest.raises(server_mod.cherrypy.HTTPError) as exc:
             dj.schedule_save()
         assert exc.value.status == 400
+        assert "bytes" in str(exc.value)
 
     def test_steps_must_be_a_list(self, save_schedule, server_mod):
         with pytest.raises(server_mod.cherrypy.HTTPError):
