@@ -9,3 +9,6 @@ schedules.json.tmp
 stations.json
 stations.json.tmp
 .claude/
+.coverage
+coverage.json
+htmlcov/
