@@ -133,3 +133,15 @@ class TestQueuePosition:
             result = dj._do_getqueue()
         assert result["queue"] == [{"title": "a"}]
         assert "track_no" not in result
+
+
+class TestQueueEditErrorsAreJson:
+    """The 409 from the drift guard is the response the UI most needs to
+    parse; without an error_page handler CherryPy renders it as HTML."""
+
+    def test_409_has_a_handler(self, server_mod):
+        assert 'error_page.409' in server_mod.DJServer._cp_config
+
+    @pytest.mark.parametrize("code", [400, 401, 404, 409, 429, 500, 502])
+    def test_every_status_the_app_raises_renders_as_json(self, server_mod, code):
+        assert f'error_page.{code}' in server_mod.DJServer._cp_config

@@ -499,6 +499,58 @@ def _save_stations_locked():
 _stations = _load_stations()
 
 
+# ==================== SONOS QUEUE EDITING ====================
+#
+# Reordering and removing queue tracks go through two custom actions added to
+# node-sonos-http-api (sonos-actions/queueedit.js in this repo; see the README
+# for the one-line install).
+#
+# They live there rather than here because macOS grants Local Network access
+# per process: the launchd-run Python server cannot open a connection to the
+# speaker at all -- UPnP calls fail with "no route to host" -- while
+# node-sonos-http-api, which talks to it constantly, can. Calling UPnP
+# directly from this process works when run from a terminal and fails once
+# deployed, which is a difference worth stating rather than rediscovering.
+#
+# Sonos queue indices are 1-based and shift as the queue is edited or plays
+# on, so every mutation is guarded: the caller states which track it believes
+# is at the index, and the edit is refused if the queue moved underneath it.
+
+
+def _sonos_get_queue(limit, offset=0):
+    """Read a window of the queue. Raises on transport failure."""
+    url = f"{SONOS_URL}/queue/{int(limit)}/{int(offset)}"
+    response = requests.get(url, timeout=SONOS_TIMEOUT)
+    if response.status_code != 200:
+        raise RuntimeError(f"Sonos returned HTTP {response.status_code} for the queue")
+    data = response.json()
+    return data if isinstance(data, list) else []
+
+
+def _queue_track_at(index):
+    """Read the single queue entry at a 1-based index, or None."""
+    entries = _sonos_get_queue(limit=1, offset=index - 1)
+    return entries[0] if entries else None
+
+
+def _guard_queue_index(index, expected_title):
+    """Refuse the edit if the queue moved under the caller.
+
+    A drag that began ten seconds ago may now point at a different track,
+    because tracks finish and other clients add and remove. Rejecting with a
+    409 and letting the client refresh beats silently reordering something
+    the user never touched.
+    """
+    track = _queue_track_at(index)
+    if track is None:
+        _bad_request(f"there is no track at position {index}")
+    actual = (track.get('title') or '').strip()
+    if expected_title is not None and actual != (expected_title or '').strip():
+        raise cherrypy.HTTPError(
+            409, f"position {index} now holds {actual!r} -- the queue moved, refresh and retry")
+    return track
+
+
 def _is_authenticated():
     """True if the current request carries a valid session cookie or CLI token.
 
@@ -754,6 +806,7 @@ class DJServer:
         'error_page.400': _json_error_page,
         'error_page.401': _json_error_page,
         'error_page.404': _json_error_page,
+        'error_page.409': _json_error_page,
         'error_page.429': _json_error_page,
         'error_page.500': _json_error_page,
         'error_page.502': _json_error_page,
@@ -924,6 +977,70 @@ class DJServer:
             cherrypy.response.status = 503
 
         return checks
+
+    # ==================== QUEUE EDITING ====================
+
+    @cherrypy.expose
+    @cherrypy.tools.json_out()
+    @cherrypy.tools.allow(methods=['POST'])
+    def queue_move(self, index=None, to=None, title=None):
+        """Move the track at `index` so it ends up at position `to`.
+
+        Both are 1-based, matching what the queue listing shows. `title` is
+        the caller's belief about what sits at `index`; the move is refused
+        with 409 if that no longer holds.
+        """
+        start = _validate_int(index, "index", 1, 100000)
+        dest = _validate_int(to, "to", 1, 100000)
+        if start == dest:
+            return {"status": "unchanged", "index": start}
+
+        track = _guard_queue_index(start, title)
+
+        result = self._sonos_request(f"queuemove/{start}/{dest}")
+        if "error" in result:
+            return result
+
+        log.info("Queue: moved %r from %d to %d", track.get('title'), start, dest)
+        return {"status": "moved", "from": start, "to": dest, "title": track.get('title')}
+
+    @cherrypy.expose
+    @cherrypy.tools.json_out()
+    @cherrypy.tools.allow(methods=['POST'])
+    def queue_remove(self, index=None, title=None):
+        """Remove the track at a 1-based `index`, guarded by `title`."""
+        position = _validate_int(index, "index", 1, 100000)
+        track = _guard_queue_index(position, title)
+
+        result = self._sonos_request(f"queueremove/{position}")
+        if "error" in result:
+            return result
+
+        log.info("Queue: removed %r from position %d", track.get('title'), position)
+        return {"status": "removed", "index": position, "title": track.get('title')}
+
+    @cherrypy.expose
+    @cherrypy.tools.json_out()
+    def queue_window(self, offset=None, limit=None):
+        """A slice of the queue, plus where playback currently is.
+
+        The queue can run to tens of thousands of tracks, so the client asks
+        for the part it is showing rather than pulling the lot -- the full
+        listing takes longer than the request timeout.
+        """
+        start = _validate_int(offset or 0, "offset", 0, 100000)
+        count = _validate_int(limit or QUEUE_DISPLAY_LIMIT, "limit", 1, 200)
+        try:
+            entries = _sonos_get_queue(limit=count, offset=start)
+        except (RuntimeError, requests.exceptions.RequestException) as exc:
+            cherrypy.response.status = 502
+            return {"error": str(exc), "queue": []}
+
+        payload = {"queue": entries, "offset": start, "limit": count}
+        state = self._sonos_request("state")
+        if "error" not in state:
+            payload["track_no"] = state.get("trackNo")
+        return payload
 
     # ==================== SCHEDULES ====================
 

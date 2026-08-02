@@ -54,3 +54,6 @@ adding features stops being risky — fill this in then.
       and cannot be generated in-app since the recommendations endpoints were
       withdrawn -- so paste one once, name it, and reuse it
 - [x] weekly calendar view of what is scheduled
+- [x] split-layout UI: permanent player, swappable content panes, no page scroll
+- [x] queue view showing played / current / upcoming, windowed for long queues
+- [x] drag-to-reorder and remove, guarded against the queue shifting underneath

@@ -116,6 +116,9 @@ dj help
 | `/volume?change=<+/-10>` | Adjust volume |
 | `/nowplaying` | Current track info |
 | `/getqueue` | View queue |
+| `/queue_window?offset=&limit=` | A slice of the queue plus the playing position |
+| `/queue_move` | Reorder a track (POST) |
+| `/queue_remove` | Remove a track (POST) |
 | `/clearqueue` | Clear queue |
 | `/my/playlists` | Your playlists |
 | `/my/liked` | Your liked songs |
@@ -164,6 +167,23 @@ git clone https://github.com/jishi/node-sonos-http-api.git
 cd node-sonos-http-api
 npm install
 ```
+
+Then add this project's queue-editing actions, which upstream does not ship:
+
+```bash
+cp ~/spotify-server/sonos-actions/*.js ~/node-sonos-http-api/lib/actions/
+```
+
+They register `queuemove` and `queueremove`, which the web UI's drag-and-drop
+needs. They live in node-sonos-http-api rather than in `server.py` because
+**macOS grants Local Network access per process**: the launchd-run Python
+server cannot open a connection to the speaker at all (UPnP calls fail with
+"no route to host"), while node-sonos-http-api, which talks to it constantly,
+can. Calling the speaker directly from Python works from a terminal and fails
+once deployed — a difference worth knowing before reaching for it.
+
+Re-run the copy after updating node-sonos-http-api; `lib/actions/` is inside
+that clone, so a fresh checkout drops them.
 
 ### 3. Clone this repo
 
@@ -404,6 +424,23 @@ Note that auth is *not* based on source IP. `cloudflared` connects over
 loopback, so tunnelled internet traffic is indistinguishable from a local
 request by address alone — exempting localhost would expose everything.
 
+## The queue
+
+The Queue tab shows a window around the current track — already-played tracks
+dimmed, the current one highlighted, the rest upcoming. Position comes from
+Sonos, which is the only thing that knows it: Spotify's own recently-played
+history stays empty because playback happens through Sonos rather than a
+Spotify client.
+
+Drag a row to reorder it, or press ✕ to remove it. Both carry the title the
+row was showing, and the server refuses with **409** if the queue moved
+underneath — tracks finish and other clients edit, so an index on its own is
+not a safe address for a change.
+
+Queues run to tens of thousands of tracks, so the view is a 50-track window
+with earlier/later paging rather than the whole list; fetching all of it takes
+longer than the request timeout.
+
 ## Schedules
 
 Open **⏰ Scheduled actions** in the web UI. A schedule is a *routine*: a
@@ -493,6 +530,7 @@ spotify-server/
 ├── auth.py               # One-off Spotify OAuth flow -> .cache
 ├── static/index.html     # Web UI markup, CSS and JS
 ├── dj_aliases.sh         # `dj` CLI (needs jq)
+├── sonos-actions/        # Plugins copied into node-sonos-http-api
 ├── config.json           # Credentials + settings   (gitignored)
 ├── .cache                # Spotify OAuth token      (gitignored)
 ├── schedules.json        # Scheduled routines       (gitignored)
