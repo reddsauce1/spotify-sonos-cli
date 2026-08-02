@@ -177,12 +177,16 @@
     text-transform: uppercase; color: var(--muted);
   }
 
-  .chips { display: none; flex-direction: column; gap: 6px; margin-top: auto; }
-  @media (min-width: 760px) { .chips { display: flex; } }
-  .chip {
-    font-family: var(--mono); font-size: 11px; padding: 4px 8px; border-radius: 5px;
-    background: var(--panel-2); border: 1px solid var(--line); color: var(--ink-2);
+  .chips { display: flex; flex-direction: row; gap: 6px; min-width: 0; }
+  @media (min-width: 760px) {
+    .chips { flex-direction: column; margin-top: auto; }
   }
+  .chip {
+    font-family: var(--mono); font-size: 10.5px; padding: 4px 8px; border-radius: 5px;
+    background: var(--panel-2); border: 1px solid var(--line); color: var(--ink-2);
+    flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  @media (min-width: 760px) { .chip { font-size: 11px; flex: none; } }
 
   /* ============ Content ============ */
   .content { grid-area: content; display: flex; flex-direction: column; min-height: 0; min-width: 0; }

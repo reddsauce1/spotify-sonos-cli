@@ -383,3 +383,37 @@ class TestControlsAreReachableOnAPhone:
         rule = re.search(r"\.vol input\s*\{([^}]*)\}", css).group(1)
         height = re.search(r"height:\s*(\d+)px", rule)
         assert height and int(height.group(1)) >= 24, rule
+
+
+class TestChipsOnMobile:
+    """Queue depth and how many routines are armed are worth seeing at a
+    glance from a phone, not only from the sidebar."""
+
+    def test_chips_are_not_hidden_by_default(self, markup):
+        css = markup.split("<style>", 1)[1].split("</style>", 1)[0]
+        rule = re.search(r"\.chips\s*\{([^}]*)\}", css).group(1)
+        assert "display: none" not in rule
+
+    def test_chips_lie_side_by_side_on_narrow_screens(self, markup):
+        """Stacked, they would add two rows to a player that is already three
+        deep on a phone."""
+        css = markup.split("<style>", 1)[1].split("</style>", 1)[0]
+        base = re.search(r"\.chips\s*\{([^}]*)\}", css).group(1)
+        assert "flex-direction: row" in base
+
+    def test_chips_stack_again_in_the_sidebar(self, markup):
+        """The sidebar has height to spare and no width, so the wide layout
+        wants the opposite arrangement to the phone's."""
+        css = markup.split("<style>", 1)[1].split("</style>", 1)[0]
+        override = re.search(
+            r"@media \(min-width: 760px\) \{\s*\.chips \{([^}]*)\}", css)
+        assert override, "no wide-screen rule for .chips"
+        assert "flex-direction: column" in override.group(1)
+
+    def test_long_chip_text_cannot_push_the_layout_wide(self, markup):
+        """'Queue · playing 17879' next to '2 of 3 routines on' has to
+        truncate, not overflow."""
+        css = markup.split("<style>", 1)[1].split("</style>", 1)[0]
+        rule = re.search(r"\.chip\s*\{([^}]*)\}", css).group(1)
+        assert "text-overflow: ellipsis" in rule
+        assert "min-width: 0" in rule
