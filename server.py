@@ -1177,65 +1177,8 @@ class DJServer:
                  verb, entry['time'], entry.get('label', ''), len(entry['steps']))
         return {"status": verb, "schedule": result}
 
-    @cherrypy.expose
-    @cherrypy.tools.json_out()
-    @cherrypy.tools.allow(methods=['POST'])
-    def schedule_add(self, time=None, days=None, label=None,
-                     action=None, uri=None, volume=None, offset=None):
-        """Create a routine, optionally with its first step.
 
-        Allowing a step inline keeps the common one-action case a single
-        request; extra steps go through schedule_step_add.
-        """
-        entry = _validate_schedule(time, days, label)
-        if action:
-            entry['steps'].append(_validate_step(action, offset, uri, volume))
 
-        with _schedules_lock:
-            if len(_schedules) >= MAX_SCHEDULES:
-                _bad_request(f"at most {MAX_SCHEDULES} schedules")
-            _schedules.append(entry)
-            _save_schedules_locked()
-        log.info("Schedule added: %s %s (%d step(s))",
-                 entry['time'], entry.get('label', ''), len(entry['steps']))
-        return {"status": "added", "schedule": entry}
-
-    @cherrypy.expose
-    @cherrypy.tools.json_out()
-    @cherrypy.tools.allow(methods=['POST'])
-    def schedule_step_add(self, id=None, action=None, offset=None,
-                          uri=None, volume=None):
-        """Append a step, keeping the routine ordered by offset."""
-        step = _validate_step(action, offset, uri, volume)
-        with _schedules_lock:
-            entry = next((e for e in _schedules if e.get('id') == id), None)
-            if entry is None:
-                _bad_request(f"no schedule with id {id!r}")
-            if len(entry.get('steps', [])) >= MAX_STEPS:
-                _bad_request(f"at most {MAX_STEPS} steps per schedule")
-            entry.setdefault('steps', []).append(step)
-            entry['steps'].sort(key=lambda s: s.get('offset', 0))
-            _save_schedules_locked()
-            result = dict(entry)
-        log.info("Step added to %s: +%dm %s", id, step['offset'], step['action'])
-        return {"status": "added", "schedule": result}
-
-    @cherrypy.expose
-    @cherrypy.tools.json_out()
-    @cherrypy.tools.allow(methods=['POST'])
-    def schedule_step_delete(self, id=None, index=None):
-        with _schedules_lock:
-            entry = next((e for e in _schedules if e.get('id') == id), None)
-            if entry is None:
-                _bad_request(f"no schedule with id {id!r}")
-            steps = entry.get('steps', [])
-            position = _validate_int(index, "index", 0, max(len(steps) - 1, 0))
-            if not steps:
-                _bad_request("schedule has no steps")
-            steps.pop(position)
-            _save_schedules_locked()
-            result = dict(entry)
-        return {"status": "deleted", "schedule": result}
 
     @cherrypy.expose
     @cherrypy.tools.json_out()

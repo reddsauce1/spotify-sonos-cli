@@ -116,10 +116,13 @@ class TestEndpointDiscipline:
 
 
 class TestUsableAsAScheduleStep:
-    def test_a_station_uri_is_valid_in_a_step(self, dj, server_mod, tmp_path, monkeypatch):
-        """The point of saving them: they become selectable as schedule steps."""
+    def test_a_station_uri_is_valid_in_a_step(self, server_mod, tmp_path,
+                                              monkeypatch, save_schedule):
+        """The point of saving them: they become selectable as schedule steps.
+        A radio playlist 404s on the Web API, so a step must not require the
+        uri to be resolvable."""
         monkeypatch.setattr(server_mod, "SCHEDULES_PATH", str(tmp_path / "s.json"))
         monkeypatch.setattr(server_mod, "_schedules", [])
-        sid = dj.schedule_add(time="07:00", label="radio wake")["schedule"]["id"]
-        result = dj.schedule_step_add(id=sid, action="play", uri=RADIO_URI, offset=0)
+        result = save_schedule(time="07:00", days=[], label="radio wake",
+                               steps=[{"offset": 0, "action": "play", "uri": RADIO_URI}])
         assert result["schedule"]["steps"][0]["uri"] == RADIO_URI

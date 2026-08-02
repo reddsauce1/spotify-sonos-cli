@@ -253,22 +253,31 @@ class TestPersistence:
         assert json.load(open(server_mod.SCHEDULES_PATH))
 
 
+PAUSE_AT_7 = dict(time="07:00", days=[], label="morning",
+                  steps=[{"offset": 0, "action": "pause"}])
+
+
 class TestEndpoints:
     def test_mutations_are_post_only(self, server_mod):
         """A GET would put the schedule in the access log and let a stray link
         change the alarm."""
-        for name in ('schedule_add', 'schedule_delete', 'schedule_toggle', 'schedule_run'):
+        for name in ('schedule_save', 'schedule_delete', 'schedule_toggle', 'schedule_run'):
             conf = getattr(getattr(server_mod.DJServer, name), '_cp_config', {})
             assert conf.get('tools.allow.methods') == ['POST'], name
 
     def test_schedules_endpoint_is_not_public(self, server_mod):
-        for path in ('/schedules', '/schedule_add', '/schedule_delete',
+        for path in ('/schedules', '/schedule_save', '/schedule_delete',
                      '/schedule_toggle', '/schedule_run'):
             assert path not in server_mod.PUBLIC_PATHS
 
-    def test_add_then_list_then_delete(self, dj, server_mod):
-        added = dj.schedule_add(time="07:00", action="pause", label="morning")
-        sid = added["schedule"]["id"]
+    def test_the_superseded_incremental_endpoints_are_gone(self, server_mod):
+        """Building a routine across several requests left a half-built one
+        live and armed in between, and offered no way to edit it afterwards."""
+        for name in ('schedule_add', 'schedule_step_add', 'schedule_step_delete'):
+            assert not hasattr(server_mod.DJServer, name), name
+
+    def test_add_then_list_then_delete(self, dj, save_schedule):
+        sid = save_schedule(**PAUSE_AT_7)["schedule"]["id"]
         assert any(s["id"] == sid for s in dj.schedules()["schedules"])
         dj.schedule_delete(id=sid)
         assert not any(s["id"] == sid for s in dj.schedules()["schedules"])
@@ -278,31 +287,31 @@ class TestEndpoints:
             dj.schedule_delete(id="sch_nope")
         assert exc.value.status == 400
 
-    def test_toggle_flips_enabled(self, dj, server_mod):
-        sid = dj.schedule_add(time="07:00", action="pause")["schedule"]["id"]
+    def test_toggle_flips_enabled(self, dj, save_schedule):
+        sid = save_schedule(**PAUSE_AT_7)["schedule"]["id"]
         assert dj.schedule_toggle(id=sid)["schedule"]["enabled"] is False
         assert dj.schedule_toggle(id=sid)["schedule"]["enabled"] is True
 
-    def test_run_now_fires_without_waiting(self, dj, server_mod):
-        sid = dj.schedule_add(time="07:00", action="pause")["schedule"]["id"]
+    def test_run_now_fires_without_waiting(self, dj, save_schedule):
+        sid = save_schedule(**PAUSE_AT_7)["schedule"]["id"]
         with patch.object(dj, "_do_pause") as m:
             dj.schedule_run(id=sid)
         m.assert_called_once()
 
-    def test_run_now_does_not_consume_the_scheduled_run(self, dj, server_mod):
+    def test_run_now_does_not_consume_the_scheduled_run(self, dj, server_mod, save_schedule):
         """Testing an alarm at lunchtime must not stop it firing tomorrow."""
-        sid = dj.schedule_add(time="07:00", action="pause")["schedule"]["id"]
+        sid = save_schedule(**PAUSE_AT_7)["schedule"]["id"]
         with patch.object(dj, "_do_pause"):
             dj.schedule_run(id=sid)
         entry = next(s for s in server_mod._schedules if s["id"] == sid)
         assert all(step["last_fired"] is None for step in entry["steps"])
 
-    def test_cap_on_total_schedules(self, dj, server_mod, monkeypatch):
+    def test_cap_on_total_schedules(self, server_mod, monkeypatch, save_schedule):
         monkeypatch.setattr(server_mod, "MAX_SCHEDULES", 3)
         for _ in range(3):
-            dj.schedule_add(time="07:00", action="pause")
+            save_schedule(**PAUSE_AT_7)
         with pytest.raises(server_mod.cherrypy.HTTPError):
-            dj.schedule_add(time="07:00", action="pause")
+            save_schedule(**PAUSE_AT_7)
 
 
 class TestTickFrequency:
@@ -413,69 +422,26 @@ class TestOffsetPastMidnight:
         assert server_mod._step_fire_time(trigger, offset) == expected
 
 
-class TestStepEndpoints:
-    def test_add_routine_then_steps(self, dj, server_mod):
-        sid = dj.schedule_add(time="07:00", days="0,1,2,3,4",
-                              label="Wake-up")["schedule"]["id"]
-        dj.schedule_step_add(id=sid, action="volume", volume=12, offset=0)
-        dj.schedule_step_add(id=sid, action="play",
-                             uri="spotify:playlist:abc", offset=0)
-        result = dj.schedule_step_add(id=sid, action="volume", volume=25, offset=10)
-        assert len(result["schedule"]["steps"]) == 3
-
-    def test_steps_are_kept_in_offset_order(self, dj, server_mod):
-        sid = dj.schedule_add(time="07:00")["schedule"]["id"]
-        for offset in (60, 0, 10):
-            dj.schedule_step_add(id=sid, action="pause", offset=offset)
-        offsets = [s["offset"] for s in dj.schedules()["schedules"][0]["steps"]]
-        assert offsets == sorted(offsets)
-
-    def test_inline_first_step_on_create(self, dj, server_mod):
-        """The single-action case stays a single request."""
-        entry = dj.schedule_add(time="07:00", action="pause")["schedule"]
-        assert len(entry["steps"]) == 1
-
-    def test_create_without_a_step_is_allowed(self, dj, server_mod):
-        entry = dj.schedule_add(time="07:00", label="empty")["schedule"]
-        assert entry["steps"] == []
-
-    def test_step_delete_by_index(self, dj, server_mod):
-        sid = dj.schedule_add(time="07:00", action="pause")["schedule"]["id"]
-        dj.schedule_step_add(id=sid, action="skip", offset=5)
-        result = dj.schedule_step_delete(id=sid, index=0)
-        assert [s["action"] for s in result["schedule"]["steps"]] == ["skip"]
-
-    def test_step_delete_out_of_range_is_400(self, dj, server_mod):
-        sid = dj.schedule_add(time="07:00", action="pause")["schedule"]["id"]
-        with pytest.raises(server_mod.cherrypy.HTTPError) as exc:
-            dj.schedule_step_delete(id=sid, index=9)
-        assert exc.value.status == 400
-
-    def test_step_cap(self, dj, server_mod, monkeypatch):
-        monkeypatch.setattr(server_mod, "MAX_STEPS", 2)
-        sid = dj.schedule_add(time="07:00", action="pause")["schedule"]["id"]
-        dj.schedule_step_add(id=sid, action="skip", offset=1)
-        with pytest.raises(server_mod.cherrypy.HTTPError):
-            dj.schedule_step_add(id=sid, action="skip", offset=2)
+class TestSteps:
+    """Composition of steps is covered in test_schedule_save.py, which owns
+    the endpoint. What stays here is the step validator and the behaviour of
+    running a routine on demand."""
 
     def test_offset_is_bounded(self, server_mod):
         with pytest.raises(server_mod.cherrypy.HTTPError):
             server_mod._validate_step("pause", 99999)
 
-    def test_run_now_runs_every_step_ignoring_offsets(self, dj, server_mod):
+    def test_run_now_runs_every_step_ignoring_offsets(self, dj, save_schedule):
         """Nobody wants to sit through a 60-minute fade to test it."""
-        sid = dj.schedule_add(time="07:00", action="pause")["schedule"]["id"]
-        dj.schedule_step_add(id=sid, action="skip", offset=60)
+        sid = save_schedule(time="07:00", days=[], label="x", steps=[
+            {"offset": 0, "action": "pause"},
+            {"offset": 60, "action": "skip"},
+        ])["schedule"]["id"]
         with patch.object(dj, "_do_pause") as p, patch.object(dj, "_do_skip") as s:
             result = dj.schedule_run(id=sid)
         p.assert_called_once()
         s.assert_called_once()
         assert result["steps"] == 2
-
-    def test_step_mutations_are_post_only(self, server_mod):
-        for name in ('schedule_step_add', 'schedule_step_delete'):
-            conf = getattr(getattr(server_mod.DJServer, name), '_cp_config', {})
-            assert conf.get('tools.allow.methods') == ['POST'], name
 
 
 class TestMigrationFromFlatFormat:

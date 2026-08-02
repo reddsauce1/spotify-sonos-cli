@@ -19,16 +19,6 @@ def _isolate(server_mod, tmp_path, monkeypatch):
     yield
 
 
-@pytest.fixture
-def save(dj, server_mod, monkeypatch):
-    """Call schedule_save with a JSON body, the way the browser does."""
-    def _save(**body):
-        request = server_mod.cherrypy.request
-        monkeypatch.setattr(request, "json", body, raising=False)
-        return dj.schedule_save()
-    return _save
-
-
 WAKE = dict(
     time="06:00", days=[0, 1, 2, 3, 4], label="wake-up",
     steps=[
@@ -40,54 +30,54 @@ WAKE = dict(
 
 
 class TestCreate:
-    def test_a_whole_routine_lands_in_one_request(self, save, server_mod):
-        result = save(**WAKE)
+    def test_a_whole_routine_lands_in_one_request(self, save_schedule, server_mod):
+        result = save_schedule(**WAKE)
         assert result["status"] == "added"
         assert len(server_mod._schedules) == 1
         assert [s["action"] for s in server_mod._schedules[0]["steps"]] == [
             "volume", "play", "pause"]
 
-    def test_steps_are_ordered_by_offset_not_by_submission(self, save):
-        result = save(time="06:00", days=[], label="x", steps=[
+    def test_steps_are_ordered_by_offset_not_by_submission(self, save_schedule):
+        result = save_schedule(time="06:00", days=[], label="x", steps=[
             {"offset": 30, "action": "pause"},
             {"offset": 0, "action": "resume"},
         ])
         assert [s["offset"] for s in result["schedule"]["steps"]] == [0, 30]
 
-    def test_a_routine_with_no_steps_is_allowed(self, save):
+    def test_a_routine_with_no_steps_is_allowed(self, save_schedule):
         """The editor opens empty; saving early must not 400."""
-        assert save(time="06:00", days=[], label="empty", steps=[])["status"] == "added"
+        assert save_schedule(time="06:00", days=[], label="empty", steps=[])["status"] == "added"
 
-    def test_new_routines_are_enabled_unless_told_otherwise(self, save):
-        assert save(**WAKE)["schedule"]["enabled"] is True
-        assert save(time="07:00", days=[], label="off",
+    def test_new_routines_are_enabled_unless_told_otherwise(self, save_schedule):
+        assert save_schedule(**WAKE)["schedule"]["enabled"] is True
+        assert save_schedule(time="07:00", days=[], label="off",
                     enabled=False, steps=[])["schedule"]["enabled"] is False
 
 
 class TestEdit:
-    def test_changing_the_time_keeps_the_same_routine(self, save, server_mod):
-        first = save(**WAKE)["schedule"]
-        second = save(**{**WAKE, "id": first["id"], "time": "06:30"})
+    def test_changing_the_time_keeps_the_same_routine(self, save_schedule, server_mod):
+        first = save_schedule(**WAKE)["schedule"]
+        second = save_schedule(**{**WAKE, "id": first["id"], "time": "06:30"})
 
         assert second["status"] == "updated"
         assert len(server_mod._schedules) == 1, "edit must not create a second"
         assert second["schedule"]["id"] == first["id"]
         assert second["schedule"]["time"] == "06:30"
 
-    def test_a_step_can_be_removed_by_saving_without_it(self, save):
-        first = save(**WAKE)["schedule"]
-        result = save(**{**WAKE, "id": first["id"], "steps": WAKE["steps"][:2]})
+    def test_a_step_can_be_removed_by_saving_without_it(self, save_schedule):
+        first = save_schedule(**WAKE)["schedule"]
+        result = save_schedule(**{**WAKE, "id": first["id"], "steps": WAKE["steps"][:2]})
         assert len(result["schedule"]["steps"]) == 2
 
-    def test_editing_preserves_position_in_the_list(self, save, server_mod):
-        a = save(time="06:00", days=[], label="a", steps=[])["schedule"]
-        save(time="07:00", days=[], label="b", steps=[])
-        save(id=a["id"], time="06:00", days=[], label="a2", steps=[])
+    def test_editing_preserves_position_in_the_list(self, save_schedule, server_mod):
+        a = save_schedule(time="06:00", days=[], label="a", steps=[])["schedule"]
+        save_schedule(time="07:00", days=[], label="b", steps=[])
+        save_schedule(id=a["id"], time="06:00", days=[], label="a2", steps=[])
         assert [e["label"] for e in server_mod._schedules] == ["a2", "b"]
 
-    def test_unknown_id_is_400_not_a_silent_create(self, save, server_mod):
+    def test_unknown_id_is_400_not_a_silent_create(self, save_schedule, server_mod):
         with pytest.raises(server_mod.cherrypy.HTTPError) as exc:
-            save(id="sch_nope", time="06:00", days=[], label="x", steps=[])
+            save_schedule(id="sch_nope", time="06:00", days=[], label="x", steps=[])
         assert exc.value.status == 400
         assert server_mod._schedules == []
 
@@ -95,78 +85,78 @@ class TestEdit:
 class TestFiredStampSurvivesAnEdit:
     """Saving during the exact minute a step fires must not let it fire twice."""
 
-    def test_unchanged_steps_keep_their_stamp(self, save, server_mod):
-        first = save(**WAKE)["schedule"]
+    def test_unchanged_steps_keep_their_stamp(self, save_schedule, server_mod):
+        first = save_schedule(**WAKE)["schedule"]
         server_mod._schedules[0]["steps"][1]["last_fired"] = "2026-08-03"
 
-        save(**{**WAKE, "id": first["id"], "label": "renamed"})
+        save_schedule(**{**WAKE, "id": first["id"], "label": "renamed"})
 
         stamped = [s for s in server_mod._schedules[0]["steps"]
                    if s["action"] == "play"][0]
         assert stamped["last_fired"] == "2026-08-03"
 
-    def test_a_changed_step_is_treated_as_new(self, save, server_mod):
+    def test_a_changed_step_is_treated_as_new(self, save_schedule, server_mod):
         """A different playlist is a different step and should be free to run."""
-        first = save(**WAKE)["schedule"]
+        first = save_schedule(**WAKE)["schedule"]
         server_mod._schedules[0]["steps"][1]["last_fired"] = "2026-08-03"
 
         changed = [dict(s) for s in WAKE["steps"]]
         changed[1] = {**changed[1], "uri": "spotify:playlist:different"}
-        save(**{**WAKE, "id": first["id"], "steps": changed})
+        save_schedule(**{**WAKE, "id": first["id"], "steps": changed})
 
         played = [s for s in server_mod._schedules[0]["steps"]
                   if s["action"] == "play"][0]
         assert played["last_fired"] is None
 
-    def test_an_edited_routine_does_not_refire_the_same_minute(self, save, server_mod):
+    def test_an_edited_routine_does_not_refire_the_same_minute(self, save_schedule, server_mod):
         """The end-to-end version of the above, through _due_steps."""
         now = datetime.datetime(2026, 8, 3, 6, 0)  # a Monday
-        saved = save(**WAKE)["schedule"]
+        saved = save_schedule(**WAKE)["schedule"]
         assert len(server_mod._due_steps(now.timetuple())) == 1
 
-        save(**{**WAKE, "id": saved["id"], "label": "renamed mid-fire"})
+        save_schedule(**{**WAKE, "id": saved["id"], "label": "renamed mid-fire"})
         assert server_mod._due_steps(now.timetuple()) == []
 
 
 class TestValidation:
-    def test_a_bad_uri_is_rejected_before_anything_is_stored(self, save, server_mod):
+    def test_a_bad_uri_is_rejected_before_anything_is_stored(self, save_schedule, server_mod):
         with pytest.raises(server_mod.cherrypy.HTTPError) as exc:
-            save(time="06:00", days=[], label="x", steps=[
+            save_schedule(time="06:00", days=[], label="x", steps=[
                 {"offset": 0, "action": "play", "uri": "../../Bedroom/pause"}])
         assert exc.value.status == 400
         assert server_mod._schedules == [], "a rejected save must leave nothing behind"
 
-    def test_one_bad_step_rejects_the_whole_routine(self, save, server_mod):
+    def test_one_bad_step_rejects_the_whole_routine(self, save_schedule, server_mod):
         """Atomicity: no half-built routine goes live."""
         with pytest.raises(server_mod.cherrypy.HTTPError):
-            save(time="06:00", days=[], label="x", steps=[
+            save_schedule(time="06:00", days=[], label="x", steps=[
                 {"offset": 0, "action": "volume", "volume": 10},
                 {"offset": 5, "action": "not-a-real-action"},
             ])
         assert server_mod._schedules == []
 
     @pytest.mark.parametrize("bad", ["25:00", "6:00", "", None, "aa:bb"])
-    def test_bad_times_rejected(self, save, server_mod, bad):
+    def test_bad_times_rejected(self, save_schedule, server_mod, bad):
         with pytest.raises(server_mod.cherrypy.HTTPError):
-            save(time=bad, days=[], label="x", steps=[])
+            save_schedule(time=bad, days=[], label="x", steps=[])
 
-    def test_step_cap_is_enforced(self, save, server_mod, monkeypatch):
+    def test_step_cap_is_enforced(self, save_schedule, server_mod, monkeypatch):
         monkeypatch.setattr(server_mod, "MAX_STEPS", 2)
         with pytest.raises(server_mod.cherrypy.HTTPError):
-            save(time="06:00", days=[], label="x",
+            save_schedule(time="06:00", days=[], label="x",
                  steps=[{"offset": i, "action": "skip"} for i in range(3)])
 
-    def test_schedule_cap_is_enforced(self, save, server_mod, monkeypatch):
+    def test_schedule_cap_is_enforced(self, save_schedule, server_mod, monkeypatch):
         monkeypatch.setattr(server_mod, "MAX_SCHEDULES", 1)
-        save(time="06:00", days=[], label="a", steps=[])
+        save_schedule(time="06:00", days=[], label="a", steps=[])
         with pytest.raises(server_mod.cherrypy.HTTPError):
-            save(time="07:00", days=[], label="b", steps=[])
+            save_schedule(time="07:00", days=[], label="b", steps=[])
 
-    def test_editing_at_the_cap_is_still_allowed(self, save, server_mod, monkeypatch):
+    def test_editing_at_the_cap_is_still_allowed(self, save_schedule, server_mod, monkeypatch):
         """Replacing a routine adds nothing, so the cap must not block it."""
-        a = save(time="06:00", days=[], label="a", steps=[])["schedule"]
+        a = save_schedule(time="06:00", days=[], label="a", steps=[])["schedule"]
         monkeypatch.setattr(server_mod, "MAX_SCHEDULES", 1)
-        assert save(id=a["id"], time="06:30", days=[], label="a",
+        assert save_schedule(id=a["id"], time="06:30", days=[], label="a",
                     steps=[])["status"] == "updated"
 
     def test_a_non_object_body_is_400(self, dj, server_mod, monkeypatch):
@@ -176,9 +166,9 @@ class TestValidation:
             dj.schedule_save()
         assert exc.value.status == 400
 
-    def test_steps_must_be_a_list(self, save, server_mod):
+    def test_steps_must_be_a_list(self, save_schedule, server_mod):
         with pytest.raises(server_mod.cherrypy.HTTPError):
-            save(time="06:00", days=[], label="x", steps={"offset": 0})
+            save_schedule(time="06:00", days=[], label="x", steps={"offset": 0})
 
 
 class TestEndpointDiscipline:
@@ -224,8 +214,8 @@ class TestNextRun:
     def test_a_malformed_time_has_no_next_run(self, server_mod):
         assert server_mod._next_run({"time": "nope", "enabled": True}) is None
 
-    def test_it_is_exposed_on_the_listing(self, save, dj):
-        save(**WAKE)
+    def test_it_is_exposed_on_the_listing(self, save_schedule, dj):
+        save_schedule(**WAKE)
         assert dj.schedules()["schedules"][0]["next_run"]
 
 
@@ -233,13 +223,13 @@ class TestStepsCarryTheirClockTime:
     """So the editor shows 07:15 rather than +75m, using the same arithmetic
     that decides when the step actually fires."""
 
-    def test_offsets_become_wall_clock_times(self, save, dj):
-        save(**WAKE)
+    def test_offsets_become_wall_clock_times(self, save_schedule, dj):
+        save_schedule(**WAKE)
         steps = dj.schedules()["schedules"][0]["steps"]
         assert [s["at"] for s in steps] == ["06:00", "06:01", "07:15"]
 
-    def test_a_step_past_midnight_is_flagged(self, save, dj):
-        save(time="23:30", days=[], label="late", steps=[
+    def test_a_step_past_midnight_is_flagged(self, save_schedule, dj):
+        save_schedule(time="23:30", days=[], label="late", steps=[
             {"offset": 0, "action": "resume"},
             {"offset": 60, "action": "pause"},
         ])
@@ -247,8 +237,8 @@ class TestStepsCarryTheirClockTime:
         assert [(s["at"], s["next_day"]) for s in steps] == [
             ("23:30", False), ("00:30", True)]
 
-    def test_the_stored_offset_is_untouched(self, save, dj, server_mod):
+    def test_the_stored_offset_is_untouched(self, save_schedule, dj, server_mod):
         """Annotation is for display; it must not rewrite what fires."""
-        save(**WAKE)
+        save_schedule(**WAKE)
         assert [s["offset"] for s in server_mod._schedules[0]["steps"]] == [0, 1, 75]
         assert "at" not in server_mod._schedules[0]["steps"][0]
