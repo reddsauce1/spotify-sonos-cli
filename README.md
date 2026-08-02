@@ -289,9 +289,9 @@ server (port 5006).
     <key>KeepAlive</key>
     <true/>
     <key>StandardOutPath</key>
-    <string>/full/path/to/spotify-server/logs/spotify-server.log</string>
+    <string>/full/path/to/spotify-server/logs/launchd.log</string>
     <key>StandardErrorPath</key>
-    <string>/full/path/to/spotify-server/logs/spotify-server.error.log</string>
+    <string>/full/path/to/spotify-server/logs/launchd.err.log</string>
 </dict>
 </plist>
 ```
@@ -386,7 +386,7 @@ curl -H "X-DJ-Token: $(jq -r .cli_token config.json)" http://localhost:5006/heal
 ### View logs
 
 ```bash
-tail -f logs/spotify-server.log          # macOS: launchd redirects here
+tail -f logs/spotify-server.log          # app, access and engine, one stream
 journalctl -u spotify-api -f             # Linux
 ```
 
@@ -395,6 +395,21 @@ Application messages are prefixed `dj:` and interleave with the request log:
 ```bash
 grep ' dj: ' logs/spotify-server.log            # app events only
 grep -E 'WARNING|ERROR' logs/spotify-server.log # problems only
+```
+
+`logs/spotify-server.log` is written and rotated by the server itself — 5MB
+per file, five kept, so around 30MB total and months of history. That is why
+the plist points stdout and stderr at `logs/launchd.log` instead: launchd
+never rotates what it captures, and rotation cannot be done to a file launchd
+holds open, because renaming it out from under launchd's descriptor leaves
+launchd appending to the rotated-away file forever.
+
+`logs/launchd.err.log` therefore holds only what escapes Python's logging —
+a traceback from a failed start, say. It should stay near-empty; if it is
+growing, something is crashing.
+
+```bash
+tail logs/launchd.err.log                # should be near-empty
 ```
 
 ### Restart services
@@ -607,7 +622,7 @@ spotify-server/
 ├── .cache                # Spotify OAuth token      (gitignored)
 ├── schedules.json        # Scheduled routines       (gitignored)
 ├── stations.json         # Saved radio URIs         (gitignored)
-├── logs/                 # launchd stdout/stderr    (gitignored)
+├── logs/                 # rotated app log + crash log (gitignored)
 ├── conftest.py           # Test fixtures; mocks Spotify and config
 └── test_*.py             # Test suite -- no network or credentials needed
 

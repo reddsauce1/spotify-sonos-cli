@@ -9,6 +9,7 @@ import inspect
 import datetime
 import json
 import logging
+import logging.handlers
 import os
 import re
 import secrets
@@ -21,22 +22,47 @@ import urllib.parse
 #
 # Deliberately NOT logging.basicConfig(): cherrypy.error and cherrypy.access
 # both carry their own handlers *and* propagate=True, so adding a root handler
-# duplicates every access-log line. Configuring only this logger, with
-# propagate off, keeps our records out of cherrypy's pipeline and vice versa.
+# duplicates every access-log line. Attaching an explicit handler to each
+# named logger, with propagate off, keeps them from feeding each other.
 #
-# stdout because launchd redirects it to logs/spotify-server.log, the same
-# file as the access log -- one chronological stream is easier to correlate
-# than application errors sitting in a separate file from the request that
-# caused them.
-log = logging.getLogger('dj')
-log.setLevel(logging.INFO)
-log.propagate = False
-_handler = logging.StreamHandler(sys.stdout)
+# All three write to one file, because an application error is far easier to
+# read next to the request that caused it than in a separate file.
+#
+# The process owns the file rather than letting launchd capture stdout,
+# because launchd never rotates and nothing else was rotating either: the UI
+# polls /nowplaying every ten seconds, which is about 1.1MB of access log a
+# day, growing without bound. It has to be this process that rotates, and it
+# has to not be a file launchd holds open -- a rename underneath launchd's
+# descriptor leaves it appending to the rotated-away file forever. So the
+# plist points stdout and stderr at a separate crash log, which stays small
+# because almost nothing is written to it.
+LOG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'logs')
+LOG_PATH = os.path.join(LOG_DIR, 'spotify-server.log')
+LOG_MAX_BYTES = 5 * 1024 * 1024
+LOG_BACKUP_COUNT = 5          # so at most ~30MB total, months of history
+
+os.makedirs(LOG_DIR, exist_ok=True)
+_handler = logging.handlers.RotatingFileHandler(
+    LOG_PATH, maxBytes=LOG_MAX_BYTES, backupCount=LOG_BACKUP_COUNT)
 _handler.setFormatter(logging.Formatter(
     '%(asctime)s %(levelname)-7s %(name)s: %(message)s',
     datefmt='%d/%b/%Y:%H:%M:%S',  # matches cherrypy's access-log timestamps
 ))
+
+log = logging.getLogger('dj')
+log.setLevel(logging.INFO)
+log.propagate = False
 log.addHandler(_handler)
+
+
+def _route_cherrypy_logs_to_file():
+    """Send CherryPy's access and error logs to the same rotating file.
+
+    Called after cherrypy.config.update, which is what installs the default
+    screen handlers -- doing it earlier just gets them added back.
+    """
+    cherrypy.log.access_log.handlers = [_handler]
+    cherrypy.log.error_log.handlers = [_handler]
 
 # Load config
 config_path = os.path.join(os.path.dirname(__file__), 'config.json')
@@ -2165,8 +2191,13 @@ if __name__ == '__main__':
         # CherryPy defaults to 100MB. The largest legitimate body here is a
         # routine with the maximum number of steps, a few kilobytes; a 38MB
         # body was accepted, buffered and parsed.
-        'server.max_request_body_size': MAX_REQUEST_BODY_BYTES
+        'server.max_request_body_size': MAX_REQUEST_BODY_BYTES,
+        # Without this CherryPy also writes both logs to stdout, which the
+        # plist sends to the crash log -- every line stored twice, and the
+        # crash log growing exactly as fast as the one now being rotated.
+        'log.screen': False,
     })
+    _route_cherrypy_logs_to_file()
 
     dj_server = DJServer()
 
