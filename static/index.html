@@ -169,9 +169,9 @@
   .tbtn.primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
   .tbtn:active { transform: scale(.94); }
 
-  .vol { display: none; align-items: center; gap: 8px; }
-  @media (min-width: 760px) { .vol { display: flex; } }
-  .vol input { flex: 1; min-width: 0; accent-color: var(--accent); }
+  .vol { display: flex; align-items: center; gap: 8px; }
+  .vol input { flex: 1; min-width: 0; accent-color: var(--accent); height: 24px; margin: 0; }
+  @media (min-width: 760px) { .vol input { height: 18px; } }
   .lbl {
     font-family: var(--mono); font-size: 10px; letter-spacing: .1em;
     text-transform: uppercase; color: var(--muted);

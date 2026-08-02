@@ -355,3 +355,31 @@ class TestNowPlayingCarriesArtwork:
         with patch.object(dj, "_sonos_request",
                           return_value={"currentTrack": {"title": "T"}, "volume": 1}):
             assert dj._do_nowplaying()["artwork"] == ""
+
+
+class TestControlsAreReachableOnAPhone:
+    """The player is the only place transport lives, and it is a compact bar
+    on a phone. Anything hidden there is unreachable, not merely smaller."""
+
+    CONTROLS = [".vol", ".transport", ".seek"]
+
+    @pytest.mark.parametrize("selector", CONTROLS)
+    def test_control_is_not_hidden_by_default(self, markup, selector):
+        css = markup.split("<style>", 1)[1].split("</style>", 1)[0]
+        rule = re.search(re.escape(selector) + r"\s*\{([^}]*)\}", css)
+        assert rule, f"no rule for {selector}"
+        assert "display: none" not in rule.group(1), \
+            f"{selector} is hidden by default, so it never appears on a phone"
+
+    def test_volume_input_exists_in_the_player(self, markup):
+        body = markup.split("<body>", 1)[1]
+        player = body[body.index('class="player"'):body.index("</aside>")]
+        assert 'id="vol"' in player
+        assert 'type="range"' in player
+
+    def test_volume_has_a_usable_touch_target(self, markup):
+        """A slider a few pixels tall cannot be grabbed with a thumb."""
+        css = markup.split("<style>", 1)[1].split("</style>", 1)[0]
+        rule = re.search(r"\.vol input\s*\{([^}]*)\}", css).group(1)
+        height = re.search(r"height:\s*(\d+)px", rule)
+        assert height and int(height.group(1)) >= 24, rule
