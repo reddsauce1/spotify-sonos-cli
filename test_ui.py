@@ -292,3 +292,57 @@ class TestSplitLayout:
         assert "data.track_no" in markup
         assert "row played" in markup
         assert "row current" in markup
+
+
+class TestTracksAddressedByUri:
+    """The server's numbered results are ONE global slot written by search,
+    my(), recommend() and album_tracks(). A row number therefore means "row N
+    of whatever wrote last", not "row N of what you can see. The UI must not
+    depend on it."""
+
+    def test_track_actions_send_a_uri(self, markup):
+        assert "'/' + action + '?uri=' + encodeURIComponent(uri)" in markup
+
+    def test_track_actions_do_not_send_a_row_number(self, markup):
+        assert "?num=' + num" not in markup
+        assert "action + '?num=" not in markup
+
+    def test_add_to_playlist_sends_a_uri(self, markup):
+        assert "uri: sheetTrackUri" in markup
+        assert "num: sheetTrackNum" not in markup
+
+    def test_artwork_does_not_come_from_album_tracks(self, markup):
+        """album_tracks writes to the shared slot, so polling it for artwork
+        silently replaced the user's search results every 10 seconds.
+
+        Checks for a call, not the string -- the comments explaining this
+        mention the endpoint by name."""
+        assert "fetch('/album_tracks" not in markup
+        assert 'fetch("/album_tracks' not in markup
+
+    def test_artwork_comes_from_nowplaying(self, markup):
+        np = markup.split("function refreshNowPlaying(", 1)[1].split("\n  }", 1)[0]
+        assert "data.artwork" in np
+
+
+class TestNowPlayingCarriesArtwork:
+    def test_artwork_and_uri_are_returned(self, dj, server_mod):
+        from unittest.mock import patch
+        state = {
+            "currentTrack": {
+                "title": "The Trip", "artist": "Kim Fowley", "album": "X",
+                "absoluteAlbumArtUri": "http://192.168.8.134:1400/getaa?x",
+                "uri": "x-sonos-spotify:spotify%3atrack%3aabc",
+            },
+            "volume": 12, "playbackState": "PLAYING",
+        }
+        with patch.object(dj, "_sonos_request", return_value=state):
+            result = dj._do_nowplaying()
+        assert result["artwork"] == "http://192.168.8.134:1400/getaa?x"
+        assert result["uri"].startswith("x-sonos-spotify")
+
+    def test_missing_artwork_is_empty_not_absent(self, dj, server_mod):
+        from unittest.mock import patch
+        with patch.object(dj, "_sonos_request",
+                          return_value={"currentTrack": {"title": "T"}, "volume": 1}):
+            assert dj._do_nowplaying()["artwork"] == ""

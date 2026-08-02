@@ -460,12 +460,11 @@
         document.getElementById('vol').value = data.volume;
         document.getElementById('vol-num').textContent = data.volume;
       }
-      if (playing) loadAlbumTracks();
-    }).catch(() => {});
-  }
-
-  function loadAlbumTracks() {
-    fetch('/album_tracks?based_on=nowplaying').then(r => r.json()).then(data => {
+      // Artwork comes from Sonos in the same response. It must NOT come from
+      // /album_tracks: that endpoint writes to the shared numbered-results
+      // slot, so polling it for artwork silently replaced whatever the user
+      // had just searched for, and "queue number 1" then queued the wrong
+      // track entirely.
       if (data.artwork) document.getElementById('art').src = data.artwork;
     }).catch(() => {});
   }
@@ -520,21 +519,25 @@
             (item.album ? ' · ' + escapeHtml(item.album) : '') + '</div>' +
         '</div>' +
         '<div class="row-acts">' +
-          '<button class="abtn go" title="Play now" onclick="trackAction(' + item.num + ', &quot;play&quot;)">▶</button>' +
-          '<button class="abtn" title="Play next" onclick="trackAction(' + item.num + ', &quot;next&quot;)">⏭</button>' +
-          '<button class="abtn" title="Add to queue" onclick="trackAction(' + item.num + ', &quot;queue&quot;)">＋</button>' +
-          '<button class="abtn" title="Add to playlist" onclick="openAddToPlaylist(' + item.num + ')">☰</button>' +
+          '<button class="abtn go" title="Play now" onclick="trackAction(\'' + escapeHtml(item.uri) + '\', \'play\')">▶</button>' +
+          '<button class="abtn" title="Play next" onclick="trackAction(\'' + escapeHtml(item.uri) + '\', \'next\')">⏭</button>' +
+          '<button class="abtn" title="Add to queue" onclick="trackAction(\'' + escapeHtml(item.uri) + '\', \'queue\')">＋</button>' +
+          '<button class="abtn" title="Add to playlist" onclick="openAddToPlaylist(\'' + escapeHtml(item.uri) + '\')">☰</button>' +
         '</div>' +
       '</div>'
     ).join('') || '<div class="empty">No results.</div>';
   }
 
-  function trackAction(num, action) {
-    fetch('/' + action + '?num=' + num).then(r => r.json()).then(data => {
+  // Addressed by uri, never by row number. The server's numbered results are
+  // one global slot shared by search, playlists, liked, recommend and
+  // album_tracks -- so a number means "row N of whatever wrote to that slot
+  // last", which is not necessarily what is on screen.
+  function trackAction(uri, action) {
+    fetch('/' + action + '?uri=' + encodeURIComponent(uri)).then(r => r.json()).then(data => {
       if (data.error) { showToast('❌ ' + data.error); return; }
-      const verb = {play: '▶️ Playing', next: '⏭️ Up next', queue: '➕ Queued'}[action];
-      showToast(verb + (data.item ? ': ' + data.item.name : ''));
+      showToast({play: '▶️ Playing', next: '⏭️ Up next', queue: '➕ Queued'}[action]);
       refreshNowPlaying();
+      if (action !== 'play') loadQueue();
     });
   }
 
@@ -706,10 +709,10 @@
   }
 
   // ---- Add to playlist --------------------------------------------------
-  let sheetTrackNum = null;
+  let sheetTrackUri = null;
 
-  function openAddToPlaylist(num) {
-    sheetTrackNum = num;
+  function openAddToPlaylist(uri) {
+    sheetTrackUri = uri;
     document.getElementById('sheet-title').textContent = 'Add to playlist';
     const body = PLAYLISTS.length
       ? PLAYLISTS.map(p =>
@@ -728,7 +731,7 @@
   function addToPlaylist(playlistUri) {
     const id = playlistUri.split(':').pop();
     post('/add_to_playlist',
-      new URLSearchParams({playlist_id: id, num: sheetTrackNum}).toString())
+      new URLSearchParams({playlist_id: id, uri: sheetTrackUri}).toString())
       .then(({ok, data}) => {
         closeSheet();
         showToast(ok ? '✅ Added' : '❌ ' + (data.error || 'Failed'));

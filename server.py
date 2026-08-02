@@ -1400,6 +1400,12 @@ class DJServer:
             "title": track.get('title', 'Nothing playing'),
             "artist": track.get('artist', ''),
             "album": track.get('album', ''),
+            # Sonos already knows the artwork, so a client does not have to ask
+            # Spotify for it. That matters beyond saving a call: album_tracks
+            # writes to the shared numbered-results slot, so polling it for
+            # artwork silently changed what "play number 3" referred to.
+            "artwork": track.get('absoluteAlbumArtUri', ''),
+            "uri": track.get('uri', ''),
             "volume": result.get('volume', 0),
             "playbackState": result.get('playbackState', 'unknown')
         }
