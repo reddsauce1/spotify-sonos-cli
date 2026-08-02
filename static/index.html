@@ -999,13 +999,28 @@
       results.map(t => trackRow(t, false)).join('') || '<div class="empty">No results.</div>';
   }
 
+  // play, next and queue all mutate the Sonos queue, so all three have to
+  // refresh the queue view. That is easy to miss for "play": the underlying
+  // spotify "now" action does not replace the queue, it inserts the track at
+  // trackNo + 1, seeks to it and plays -- so the list changes and everything
+  // after the insert shifts by one.
+  //
+  // Only next and queue used to refresh, and only for track rows. The + on an
+  // album, playlist or station row went through queueUri, which refreshed
+  // nothing: it said "Queued" and left the Queue tab showing the old list, so
+  // adding something looked like it had done nothing at all.
+  const ACTION_TOAST = {play: '▶️ Playing', next: '⏭️ Up next', queue: '➕ Queued'};
+
   function trackAction(uri, action) {
-    fetch('/' + action + '?uri=' + encodeURIComponent(uri)).then(r => r.json()).then(data => {
-      if (data.error) { showToast('❌ ' + data.error); return; }
-      showToast({play: '▶️ Playing', next: '⏭️ Up next', queue: '➕ Queued'}[action]);
-      refreshNowPlaying();
-      if (action !== 'play') loadQueue();
-    });
+    return fetch('/' + action + '?uri=' + encodeURIComponent(uri))
+      .then(r => r.json())
+      .then(data => {
+        if (data.error) { showToast('❌ ' + data.error); return; }
+        showToast(ACTION_TOAST[action] || '✓ Done');
+        refreshNowPlaying();
+        loadQueue();
+      })
+      .catch(() => showToast('❌ Could not reach the server'));
   }
 
   // ---- Queue ------------------------------------------------------------
@@ -1222,18 +1237,9 @@
     if (item) playUri(item.uri);
   }
 
-  function playUri(uri) {
-    fetch('/play?uri=' + encodeURIComponent(uri)).then(r => r.json()).then(data => {
-      showToast(data.error ? '❌ ' + data.error : '▶️ Playing');
-      refreshNowPlaying();
-    });
-  }
+  function playUri(uri) { return trackAction(uri, 'play'); }
 
-  function queueUri(uri) {
-    fetch('/queue?uri=' + encodeURIComponent(uri)).then(r => r.json()).then(data => {
-      showToast(data.error ? '❌ ' + data.error : '➕ Queued');
-    });
-  }
+  function queueUri(uri) { return trackAction(uri, 'queue'); }
 
   function renderStations() {
     const el = document.getElementById('stn-list');
