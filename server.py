@@ -362,6 +362,58 @@ def _step_fire_time(trigger, offset):
     return f"{minutes // 60:02d}:{minutes % 60:02d}", day_shift
 
 
+def _next_run(entry, now=None):
+    """When this routine next triggers, as an ISO datetime, or None.
+
+    The UI used to show nothing at all about when a routine would fire, which
+    is how a wake-up alarm sat on Sunday-only for weeks without anyone
+    noticing. Computed here rather than in JavaScript because the weekday
+    convention (0=Monday, empty=every day) belongs to _due_steps; a second
+    implementation would be free to drift from the one that actually fires.
+    """
+    if not entry.get('enabled', True):
+        return None
+    trigger = entry.get('time', '')
+    if not TIME_RE.match(trigger):
+        return None
+
+    now = now or datetime.datetime.now()
+    days = entry.get('days') or list(range(7))
+    hour, minute = int(trigger[:2]), int(trigger[3:])
+
+    # 8 rather than 7: if today matches but the time has already passed, the
+    # answer is next week's same weekday.
+    for ahead in range(8):
+        date = now.date() + datetime.timedelta(days=ahead)
+        if date.weekday() not in days:
+            continue
+        when = datetime.datetime.combine(date, datetime.time(hour, minute))
+        if when > now:
+            return when.isoformat(timespec='minutes')
+    return None
+
+
+def _annotate_schedule(entry, now=None):
+    """A copy of a routine carrying what the UI needs to render it.
+
+    Steps gain the wall-clock time they land on, so the editor can show
+    '07:15' instead of '+75m' without doing the midnight-wrap arithmetic
+    itself.
+    """
+    result = dict(entry)
+    result['next_run'] = _next_run(entry, now)
+    trigger = entry.get('time', '')
+    steps = []
+    for step in entry.get('steps', []):
+        step = dict(step)
+        if TIME_RE.match(trigger):
+            step['at'], shift = _step_fire_time(trigger, step.get('offset', 0))
+            step['next_day'] = bool(shift)
+        steps.append(step)
+    result['steps'] = steps
+    return result
+
+
 def _due_steps(now=None):
     """Claim every step due right now, stamping each under the lock.
 
@@ -1050,9 +1102,80 @@ class DJServer:
         """List schedules, newest state included."""
         with _schedules_lock:
             return {
-                "schedules": [dict(e) for e in _schedules],
+                "schedules": [_annotate_schedule(e) for e in _schedules],
                 "tick_seconds": SCHEDULE_TICK_SECONDS,
             }
+
+    @cherrypy.expose
+    @cherrypy.tools.json_out()
+    @cherrypy.tools.json_in()
+    @cherrypy.tools.allow(methods=['POST'])
+    def schedule_save(self, **_):
+        """Create or replace a whole routine in one request.
+
+        The old flow needed schedule_add then one schedule_step_add per extra
+        step, which meant a half-built routine was already live and armed
+        between requests, and meant there was no way to change a routine at
+        all -- correcting 06:00 to 06:30 required deleting and rebuilding it.
+        Taking the entire routine at once makes editing possible and makes
+        every save atomic.
+        """
+        body = cherrypy.request.json
+        if not isinstance(body, dict):
+            _bad_request("expected a JSON object")
+
+        days = body.get('days')
+        if isinstance(days, (list, tuple)):
+            days = ','.join(str(d) for d in days)
+        entry = _validate_schedule(body.get('time'), days, body.get('label'))
+        entry['enabled'] = bool(body.get('enabled', True))
+
+        raw_steps = body.get('steps') or []
+        if not isinstance(raw_steps, list):
+            _bad_request("steps must be a list")
+        if len(raw_steps) > MAX_STEPS:
+            _bad_request(f"at most {MAX_STEPS} steps per schedule")
+        for step in raw_steps:
+            if not isinstance(step, dict):
+                _bad_request("each step must be an object")
+            entry['steps'].append(_validate_step(
+                step.get('action'), step.get('offset'),
+                step.get('uri'), step.get('volume')))
+        entry['steps'].sort(key=lambda s: s.get('offset', 0))
+
+        existing_id = body.get('id') or None
+        with _schedules_lock:
+            position = next((i for i, e in enumerate(_schedules)
+                             if e.get('id') == existing_id), None)
+            if existing_id and position is None:
+                _bad_request(f"no schedule with id {existing_id!r}")
+
+            if position is None:
+                if len(_schedules) >= MAX_SCHEDULES:
+                    _bad_request(f"at most {MAX_SCHEDULES} schedules")
+                _schedules.append(entry)
+                verb = "added"
+            else:
+                # Carry the fired-stamp across on steps that did not change.
+                # Without this, saving a routine during the very minute one of
+                # its steps fires would let that step fire a second time on
+                # the next tick.
+                def key(s):
+                    return (s.get('offset', 0), s.get('action'),
+                            s.get('uri'), s.get('volume'))
+                stamps = {key(s): s.get('last_fired')
+                          for s in _schedules[position].get('steps', [])}
+                for step in entry['steps']:
+                    step['last_fired'] = stamps.get(key(step))
+                entry['id'] = existing_id
+                _schedules[position] = entry
+                verb = "updated"
+            _save_schedules_locked()
+            result = _annotate_schedule(entry)
+
+        log.info("Schedule %s: %s %s (%d step(s))",
+                 verb, entry['time'], entry.get('label', ''), len(entry['steps']))
+        return {"status": verb, "schedule": result}
 
     @cherrypy.expose
     @cherrypy.tools.json_out()

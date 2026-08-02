@@ -290,12 +290,6 @@
   }
   .form .full { grid-column: 1 / -1; }
   .days { display: flex; gap: 4px; grid-column: 1 / -1; }
-  .days label {
-    flex: 1; text-align: center; padding: 8px 0; font-size: 12px; border-radius: 7px;
-    background: var(--panel); border: 1px solid var(--line); cursor: pointer;
-  }
-  .days input { display: none; }
-  .days input:checked + span { color: var(--accent); font-weight: 700; }
 
   .routine { padding: 10px 0; border-bottom: 1px solid var(--line); }
   .routine-head { display: flex; align-items: center; gap: 9px; }
@@ -309,13 +303,6 @@
   }
   .step .what { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .linkbtn { background: none; border: 0; color: var(--accent); font-size: 12px; padding: 4px 8px; }
-  .addstep { display: none; margin: 8px 0 4px 8px; }
-  .addstep.open { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
-  .addstep input, .addstep select {
-    padding: 8px; border-radius: 7px; min-width: 0;
-    background: var(--panel); border: 1px solid var(--line);
-  }
-  .addstep .full { grid-column: 1 / -1; }
   .off-routine { opacity: .45; }
 
   /* calendar */
@@ -353,6 +340,79 @@
   .sheet.open { display: block; }
   .sheet h3 { margin: 0 0 10px; font-size: 14px; font-weight: 500; color: var(--ink-2); }
   .sheet-item { padding: 12px 8px; border-bottom: 1px solid var(--line); font-size: 14px; cursor: pointer; }
+
+  /* routine editor -- a sheet on a phone, a centred dialog on a desktop */
+  .scrim { display: none; position: fixed; inset: 0; z-index: 45; background: rgba(0,0,0,.5); }
+  .scrim.open { display: block; }
+  .editor {
+    display: none; position: fixed; inset: auto 0 0 0; z-index: 50;
+    background: var(--panel); border-top: 1px solid var(--line);
+    border-radius: 16px 16px 0 0; padding: 16px;
+    padding-bottom: calc(16px + env(safe-area-inset-bottom));
+    max-height: 90vh; overflow-y: auto;
+  }
+  .editor.open { display: block; }
+  @media (min-width: 760px) {
+    .editor {
+      inset: 50% auto auto 50%; transform: translate(-50%, -50%);
+      width: 540px; max-width: 92vw; max-height: 86vh;
+      border: 1px solid var(--line); border-radius: 14px;
+    }
+  }
+  .ed-head { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
+  .ed-head h3 { flex: 1; margin: 0; font-size: 15px; font-weight: 600; color: var(--ink); }
+  .ed-when { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+  .ed-when input[type=time] {
+    font-family: var(--mono); font-size: 26px; font-variant-numeric: tabular-nums;
+    padding: 6px 8px; border-radius: 10px; color: var(--ink);
+    background: var(--panel-2); border: 1px solid var(--line);
+  }
+  .ed-name {
+    flex: 1; min-width: 0; padding: 10px; border-radius: 9px; font-size: 14px;
+    background: var(--panel-2); border: 1px solid var(--line); color: var(--ink);
+  }
+  .daybtn {
+    flex: 1; padding: 9px 0; font-size: 12px; border-radius: 7px;
+    background: var(--panel-2); border: 1px solid var(--line); color: var(--ink-2);
+  }
+  .daybtn.on {
+    background: color-mix(in srgb, var(--accent) 22%, var(--panel-2));
+    border-color: var(--accent-soft); color: var(--accent); font-weight: 700;
+  }
+  .ed-presets { display: flex; gap: 4px; margin: 6px 0 0; }
+  .ed-next {
+    font-family: var(--mono); font-size: 11.5px; color: var(--accent);
+    margin: 10px 0 2px; letter-spacing: .02em;
+  }
+  .ed-next.warn { color: var(--accent-2); }
+  .ed-step { padding: 8px 0; border-bottom: 1px solid var(--line); }
+  .ed-row { display: flex; align-items: center; gap: 6px; }
+  .ed-row + .ed-row { margin-top: 6px; padding-left: 4px; }
+  .ed-step input[type=time] {
+    font-family: var(--mono); font-variant-numeric: tabular-nums; font-size: 13px;
+    padding: 7px 6px; border-radius: 7px; color: var(--ink);
+    background: var(--panel-2); border: 1px solid var(--line);
+  }
+  .ed-step select, .ed-step input[type=number] {
+    padding: 7px 6px; border-radius: 7px; min-width: 0; font-size: 13px;
+    background: var(--panel-2); border: 1px solid var(--line); color: var(--ink);
+  }
+  .ed-step .ed-act { flex: 1; min-width: 0; }
+  .ed-step .ed-src { flex: 1; min-width: 0; }
+  .ed-step .ed-vol { width: 66px; flex: none; }
+  .tag {
+    font-family: var(--mono); font-size: 9.5px; letter-spacing: .06em;
+    padding: 3px 6px; border-radius: 5px; white-space: nowrap;
+    background: color-mix(in srgb, var(--accent-2) 24%, var(--panel-2));
+    border: 1px solid var(--accent-soft); color: var(--ink-2);
+  }
+  .ed-foot { display: flex; gap: 8px; margin-top: 16px; }
+  .ed-foot .btn { flex: 1; }
+  .next-run {
+    font-family: var(--mono); font-size: 11px; color: var(--muted);
+    margin: 5px 0 0 8px; letter-spacing: .02em;
+  }
+  .next-run.warn { color: var(--accent-2); }
   .toast {
     position: fixed; left: 50%; transform: translateX(-50%);
     bottom: calc(84px + env(safe-area-inset-bottom)); z-index: 60;
@@ -438,6 +498,7 @@
         <div class="searchbar">
           <button class="btn" onclick="loadQueue()">Refresh</button>
           <button class="btn" onclick="clearQueue()">Clear queue</button>
+          <button class="btn" onclick="scheduleNowPlaying()">⏰ Schedule this</button>
         </div>
       </div>
       <div class="queue-hint">Drag to reorder · ✕ to remove</div>
@@ -466,24 +527,8 @@
         <div id="sched-list"></div>
         <div id="sched-cal" style="display:none"></div>
 
-        <div class="group">New routine</div>
-        <div class="form">
-          <input type="time" id="sched-time" value="07:00" aria-label="Time">
-          <input type="text" id="sched-label" placeholder="name" aria-label="Name">
-          <div class="days" id="sched-days"></div>
-          <select id="sched-action" onchange="schedActionChanged()" aria-label="Action">
-            <option value="play">▶ Play</option>
-            <option value="pause">⏸ Pause</option>
-            <option value="resume">▶ Resume</option>
-            <option value="skip">⏭ Skip</option>
-            <option value="previous">⏮ Previous</option>
-            <option value="volume">🔊 Set volume</option>
-            <option value="clearqueue">🗑 Clear queue</option>
-          </select>
-          <input type="number" id="sched-volume" min="0" max="100" placeholder="volume" aria-label="Step volume">
-          <select class="full" id="sched-uri" onchange="maybePasteUri(this)" aria-label="Playlist"></select>
-          <button class="btn primary full" onclick="addSchedule()">Create routine</button>
-        </div>
+        <button class="btn primary wide" style="margin-top:14px"
+                onclick="openEditor(null, null)">＋ New routine</button>
 
         <div class="group">📻 Stations</div>
         <div id="stn-list"></div>
@@ -495,6 +540,19 @@
       </div>
     </section>
   </main>
+</div>
+
+<div class="scrim" id="scrim" onclick="closeEditor()"></div>
+<div class="editor" id="editor" role="dialog" aria-modal="true" aria-labelledby="ed-title">
+  <div class="ed-head">
+    <h3 id="ed-title">New routine</h3>
+    <button class="abtn" title="Close" aria-label="Close" onclick="closeEditor()">✕</button>
+  </div>
+  <div id="ed-body"></div>
+  <div class="ed-foot">
+    <button class="btn" onclick="closeEditor()">Cancel</button>
+    <button class="btn primary" onclick="saveEditor()">Save</button>
+  </div>
 </div>
 
 <div class="sheet" id="sheet">
@@ -520,6 +578,52 @@
   }
 
   const DAY_NAMES = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+  const FULL_DAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday',
+                     'Friday', 'Saturday', 'Sunday'];
+  const HHMM_RE = /^([01]\d|2[0-3]):([0-5]\d)$/;
+
+  function toMinutes(hhmm) { return (+hhmm.slice(0, 2)) * 60 + (+hhmm.slice(3, 5)); }
+  function fromMinutes(m) {
+    m = ((m % 1440) + 1440) % 1440;
+    return String(Math.floor(m / 60)).padStart(2, '0') + ':' +
+           String(m % 60).padStart(2, '0');
+  }
+
+  // Mirrors _next_run on the server, which stays authoritative for saved
+  // routines. This copy exists only to preview a draft that has not been
+  // saved yet -- the server cannot be asked about a routine it has not seen.
+  function nextRunPreview(time, days) {
+    if (!HHMM_RE.test(time || '')) return null;
+    const now = new Date();
+    const wanted = (days && days.length) ? days : [0, 1, 2, 3, 4, 5, 6];
+    for (let ahead = 0; ahead < 8; ahead++) {
+      const when = new Date(now.getFullYear(), now.getMonth(), now.getDate() + ahead,
+                            +time.slice(0, 2), +time.slice(3, 5));
+      if (!wanted.includes((when.getDay() + 6) % 7)) continue;
+      if (when > now) return when;
+    }
+    return null;
+  }
+
+  function describeWhen(when) {
+    const now = new Date();
+    const midnight = d => new Date(d.getFullYear(), d.getMonth(), d.getDate());
+    const days = Math.round((midnight(when) - midnight(now)) / 86400000);
+    const clock = String(when.getHours()).padStart(2, '0') + ':' +
+                  String(when.getMinutes()).padStart(2, '0');
+    const label = days === 0 ? 'today'
+                : days === 1 ? 'tomorrow'
+                : FULL_DAYS[(when.getDay() + 6) % 7];
+    return label + ' ' + clock;
+  }
+
+  function sourceName(uri) {
+    const playlist = PLAYLISTS.find(p => p.uri === uri);
+    if (playlist) return playlist.name;
+    const station = STATIONS.find(st => st.uri === uri);
+    if (station) return '📻 ' + station.name;
+    return uri || '';
+  }
   const ACTION_ICON = {
     play: '▶', pause: '⏸', resume: '▶', skip: '⏭',
     previous: '⏮', volume: '🔊', clearqueue: '🗑',
@@ -532,6 +636,14 @@
     el.classList.add('show');
     clearTimeout(toastTimer);
     toastTimer = setTimeout(() => el.classList.remove('show'), 2600);
+  }
+
+  function postJson(path, body) {
+    return fetch(path, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(body),
+    }).then(r => r.json().then(data => ({ok: r.ok, data})));
   }
 
   function post(path, body) {
@@ -741,6 +853,9 @@
         '<div class="row-acts">' +
           '<button class="abtn go" title="Play album" onclick="playUri(\'' + escapeHtml(a.uri) + '\')">▶</button>' +
           '<button class="abtn" title="Queue album" onclick="queueUri(\'' + escapeHtml(a.uri) + '\')">＋</button>' +
+          '<button class="abtn" title="Schedule" aria-label="Schedule this album" ' +
+            'onclick="scheduleUri(\'' + escapeHtml(a.uri) + '\', \'' +
+            encodeURIComponent(a.name).replace(/'/g, '%27') + '\')">⏰</button>' +
         '</div>' +
       '</div>' +
       '<div class="alb-tracks" id="alb-' + key + '"></div>';
@@ -759,6 +874,9 @@
           '<button class="abtn" title="Play next" onclick="trackAction(\'' + escapeHtml(item.uri) + '\', \'next\')">⏭</button>' +
           '<button class="abtn" title="Add to queue" onclick="trackAction(\'' + escapeHtml(item.uri) + '\', \'queue\')">＋</button>' +
           '<button class="abtn" title="Add to playlist" onclick="openAddToPlaylist(\'' + escapeHtml(item.uri) + '\')">☰</button>' +
+          '<button class="abtn" title="Schedule" aria-label="Schedule this" ' +
+            'onclick="scheduleUri(\'' + escapeHtml(item.uri) + '\', \'' +
+            encodeURIComponent(item.name).replace(/'/g, '%27') + '\')">⏰</button>' +
         '</div>' +
       '</div>';
   }
@@ -954,6 +1072,7 @@
 
   // ---- Playlists & stations ---------------------------------------------
   let PLAYLISTS = [];
+  let SCHEDULES = [];
   let STATIONS = [];
 
   function loadSources() {
@@ -1039,6 +1158,9 @@
         '<div class="row-acts">' +
           '<button class="abtn go" title="Play now" onclick="playUri(\'' + escapeHtml(s.uri) + '\')">▶</button>' +
           '<button class="abtn" title="Add to queue" onclick="queueUri(\'' + escapeHtml(s.uri) + '\')">＋</button>' +
+          '<button class="abtn" title="Schedule" aria-label="Schedule this station" ' +
+            'onclick="scheduleUri(\'' + escapeHtml(s.uri) + '\', \'' +
+            encodeURIComponent(s.name).replace(/'/g, '%27') + '\')">⏰</button>' +
           '<button class="abtn" title="Delete" onclick="deleteStation(\'' + s.id + '\')">🗑</button>' +
         '</div>' +
       '</div>'
@@ -1111,29 +1233,8 @@
   }
 
   // ---- Schedules --------------------------------------------------------
-  function buildDayPicker() {
-    document.getElementById('sched-days').innerHTML = DAY_NAMES.map((d, i) =>
-      '<label><input type="checkbox" class="sched-day" value="' + i + '"><span>' + d + '</span></label>'
-    ).join('');
-  }
 
-  function schedActionChanged() {
-    const action = document.getElementById('sched-action').value;
-    document.getElementById('sched-uri').style.display = action === 'play' ? '' : 'none';
-    document.getElementById('sched-volume').style.display =
-      (action === 'play' || action === 'volume') ? '' : 'none';
-  }
 
-  function maybePasteUri(sel) {
-    if (sel.value !== '__paste__') return;
-    const v = prompt('Paste a Spotify URI (playlist, album or Song Radio)');
-    if (!v) { sel.value = ''; return; }
-    const opt = document.createElement('option');
-    opt.value = v.trim();
-    opt.textContent = '✎ ' + v.trim();
-    sel.insertBefore(opt, sel.lastElementChild);
-    sel.value = v.trim();
-  }
 
   // Grouped by the days they run, because that is how they are thought about:
   // "my weekday mornings", not "the 07:00 one".
@@ -1147,7 +1248,7 @@
 
   function describeStep(step) {
     if (step.action === 'play') {
-      let what = 'play ' + (step.uri || '');
+      let what = 'play ' + sourceName(step.uri);
       if (step.volume !== undefined && step.volume !== null) what += ' · vol ' + step.volume;
       return what;
     }
@@ -1156,46 +1257,287 @@
   }
 
   function renderRoutine(s) {
-    const steps = (s.steps || []).map((step, i) =>
+    const steps = (s.steps || []).map(step =>
       '<div class="step">' +
-        '<span class="off">+' + escapeHtml(String(step.offset || 0)) + 'm</span>' +
+        '<span class="off">' + escapeHtml(step.at || s.time) + '</span>' +
         '<span>' + escapeHtml(ACTION_ICON[step.action] || '•') + '</span>' +
-        '<span class="what">' + escapeHtml(describeStep(step)) + '</span>' +
-        '<button class="linkbtn" title="Remove step" onclick="deleteStep(\'' + s.id + '\',' + i + ')">✕</button>' +
+        '<span class="what">' + escapeHtml(describeStep(step)) +
+          (step.next_day ? ' · next day' : '') + '</span>' +
       '</div>'
-    ).join('');
+    ).join('') || '<div class="step"><span class="what">no steps</span></div>';
 
-    const stepForm =
-      '<div class="addstep" id="addstep-' + s.id + '">' +
-        '<input type="number" min="0" placeholder="+min" id="stepoff-' + s.id + '" value="0">' +
-        '<select id="stepact-' + s.id + '">' +
-          Object.keys(ACTION_ICON).map(a =>
-            '<option value="' + a + '">' + ACTION_ICON[a] + ' ' + a + '</option>').join('') +
-        '</select>' +
-        '<input type="number" min="0" max="100" placeholder="volume" id="stepvol-' + s.id + '">' +
-        '<select class="full" id="stepuri-' + s.id + '" onchange="maybePasteUri(this)">' +
-          sourceOptions('') + '</select>' +
-        '<button class="btn full" onclick="addStep(\'' + s.id + '\')">Add step</button>' +
-      '</div>';
+    // The absence of this line is how a wake-up alarm sat on Sunday-only
+    // without anyone noticing.
+    const when = s.next_run
+      ? 'next: ' + describeWhen(new Date(s.next_run))
+      : (s.enabled ? 'never runs — no days selected' : 'disabled');
 
     return '<div class="routine' + (s.enabled ? '' : ' off-routine') + '">' +
       '<div class="routine-head">' +
         '<div class="routine-time">' + escapeHtml(s.time) + '</div>' +
         '<div class="routine-name">' + escapeHtml(s.label || '(unnamed)') + '</div>' +
+        '<button class="abtn" title="Edit" aria-label="Edit routine" ' +
+          'onclick="editRoutine(\'' + s.id + '\')">✎</button>' +
         '<button class="abtn" title="Enable/disable" onclick="toggleSchedule(\'' + s.id + '\')">' +
           (s.enabled ? '🔔' : '🔕') + '</button>' +
         '<button class="abtn" title="Run now" onclick="runSchedule(\'' + s.id + '\')">⚡</button>' +
         '<button class="abtn" title="Delete" onclick="deleteSchedule(\'' + s.id + '\')">🗑</button>' +
       '</div>' +
-      '<div class="steps">' + steps +
-        '<button class="linkbtn" onclick="toggleStepForm(\'' + s.id + '\')">+ step</button>' +
-      '</div>' + stepForm +
+      '<div class="steps">' + steps + '</div>' +
+      '<div class="next-run' + (s.next_run || !s.enabled ? '' : ' warn') + '">' +
+        escapeHtml(when) + '</div>' +
     '</div>';
+  }
+
+  // ---- Routine editor ---------------------------------------------------
+  //
+  // One composer for both creating and editing. The old flow had two: a form
+  // that made a routine plus a hidden first step, and a second form inside
+  // each card for every step after that -- so the same idea had to be learnt
+  // twice, and step one was never visible as a step at all. Steps here carry
+  // the wall-clock time they fire at rather than an offset in minutes,
+  // because "+75m" makes the reader do arithmetic to answer the only
+  // question they actually have.
+
+  let EDITOR = null;
+
+  function openEditor(routine, prefill) {
+    if (routine) {
+      EDITOR = {
+        id: routine.id,
+        label: routine.label || '',
+        time: routine.time,
+        days: (routine.days || []).slice(),
+        enabled: routine.enabled !== false,
+        steps: (routine.steps || []).map(step => ({
+          at: step.at || routine.time,
+          action: step.action,
+          uri: step.uri || '',
+          name: step.uri ? sourceName(step.uri) : '',
+          volume: (step.volume === undefined || step.volume === null)
+            ? '' : String(step.volume),
+        })),
+      };
+    } else {
+      EDITOR = {
+        id: null, label: '', time: '07:00',
+        days: [0, 1, 2, 3, 4], enabled: true, steps: [],
+      };
+      if (prefill) {
+        EDITOR.label = prefill.name || '';
+        EDITOR.steps.push({
+          at: EDITOR.time, action: 'play',
+          uri: prefill.uri, name: prefill.name || prefill.uri, volume: '',
+        });
+      }
+    }
+    document.getElementById('scrim').classList.add('open');
+    document.getElementById('editor').classList.add('open');
+    renderEditor();
+    // Playlists and stations fill the source dropdowns. The editor is usable
+    // before they land, so refresh rather than block -- but only when they
+    // are actually missing, since re-rendering costs the user their cursor.
+    if (!PLAYLISTS.length && !STATIONS.length) loadSources().then(renderEditor);
+  }
+
+  function editRoutine(id) {
+    const routine = SCHEDULES.find(s => s.id === id);
+    if (!routine) { showToast('❌ That routine is gone'); loadSchedules(); return; }
+    openEditor(routine, null);
+  }
+
+  function scheduleUri(uri, encodedName) {
+    openEditor(null, {uri: uri, name: decodeURIComponent(encodedName)});
+  }
+
+  function scheduleNowPlaying() {
+    fetch('/nowplaying').then(r => r.json()).then(data => {
+      if (!data || !data.uri) { showToast('❌ Nothing is playing'); return; }
+      scheduleUri(data.uri, data.title || data.name || '');
+    });
+  }
+
+  function closeEditor() {
+    EDITOR = null;
+    document.getElementById('scrim').classList.remove('open');
+    document.getElementById('editor').classList.remove('open');
+  }
+
+  function editorTimeChanged(value) {
+    if (!HHMM_RE.test(value)) return;
+    // Moving a wake-up from 06:00 to 06:30 should move the whole routine, so
+    // steps keep their spacing and every displayed time visibly shifts.
+    const delta = toMinutes(value) - toMinutes(EDITOR.time);
+    EDITOR.time = value;
+    EDITOR.steps.forEach(step => { step.at = fromMinutes(toMinutes(step.at) + delta); });
+    renderEditor();
+  }
+
+  function editorToggleDay(day) {
+    const at = EDITOR.days.indexOf(day);
+    if (at === -1) EDITOR.days.push(day); else EDITOR.days.splice(at, 1);
+    EDITOR.days.sort((a, b) => a - b);
+    renderEditor();
+  }
+
+  function editorPreset(which) {
+    EDITOR.days = which === 'weekdays' ? [0, 1, 2, 3, 4]
+                : which === 'weekend' ? [5, 6]
+                : [0, 1, 2, 3, 4, 5, 6];
+    renderEditor();
+  }
+
+  function editorAddStep() {
+    const last = EDITOR.steps[EDITOR.steps.length - 1];
+    EDITOR.steps.push({
+      at: last ? last.at : EDITOR.time,
+      action: 'play', uri: '', name: '', volume: '',
+    });
+    renderEditor();
+  }
+
+  function editorRemoveStep(index) {
+    EDITOR.steps.splice(index, 1);
+    renderEditor();
+  }
+
+  function editorStepField(index, field, value) {
+    EDITOR.steps[index][field] = value;
+    renderEditor();
+  }
+
+  function editorSource(index, select) {
+    if (select.value === '__paste__') {
+      const pasted = prompt('Paste a Spotify URI (playlist, album or Song Radio)');
+      if (pasted) {
+        EDITOR.steps[index].uri = pasted.trim();
+        EDITOR.steps[index].name = pasted.trim();
+      }
+    } else {
+      EDITOR.steps[index].uri = select.value;
+      EDITOR.steps[index].name = select.options[select.selectedIndex].text;
+    }
+    renderEditor();
+  }
+
+  function editorStepOptions(step) {
+    const known = PLAYLISTS.some(p => p.uri === step.uri) ||
+                  STATIONS.some(st => st.uri === step.uri);
+    let html = sourceOptions(step.uri);
+    if (step.uri && !known) {
+      // A URI arrived from search or a paste, so it is in neither list; keep
+      // it selected rather than silently resetting the step to "choose one".
+      html = '<option value="' + escapeHtml(step.uri) + '" selected>' +
+             escapeHtml(step.name || step.uri) + '</option>' + html;
+    }
+    return html;
+  }
+
+  function editorStepRow(step, index) {
+    const wraps = toMinutes(step.at) < toMinutes(EDITOR.time);
+    const wantsUri = step.action === 'play';
+    const wantsVolume = step.action === 'play' || step.action === 'volume';
+
+    let detail = '';
+    if (wantsUri) {
+      detail += '<select class="ed-src" aria-label="What to play" ' +
+        'onchange="editorSource(' + index + ', this)">' +
+        editorStepOptions(step) + '</select>';
+    }
+    if (wantsVolume) {
+      detail += '<input class="ed-vol" type="number" min="0" max="100" placeholder="vol" ' +
+        'aria-label="Volume" value="' + escapeHtml(step.volume) + '" ' +
+        'oninput="EDITOR.steps[' + index + '].volume = this.value">';
+    }
+
+    return '<div class="ed-step">' +
+        '<div class="ed-row">' +
+          '<input type="time" aria-label="Step time" value="' + escapeHtml(step.at) + '" ' +
+            'onchange="editorStepField(' + index + ', \'at\', this.value)">' +
+          (wraps ? '<span class="tag">next day</span>' : '') +
+          '<select class="ed-act" aria-label="Action" ' +
+            'onchange="editorStepField(' + index + ', \'action\', this.value)">' +
+            Object.keys(ACTION_ICON).map(action =>
+              '<option value="' + action + '"' +
+              (action === step.action ? ' selected' : '') + '>' +
+              ACTION_ICON[action] + ' ' + action + '</option>').join('') +
+          '</select>' +
+          '<button class="abtn" title="Remove step" aria-label="Remove step" ' +
+            'onclick="editorRemoveStep(' + index + ')">✕</button>' +
+        '</div>' +
+        (detail ? '<div class="ed-row">' + detail + '</div>' : '') +
+      '</div>';
+  }
+
+  function renderEditor() {
+    if (!EDITOR) return;
+    document.getElementById('ed-title').textContent =
+      EDITOR.id ? 'Edit routine' : 'New routine';
+
+    const upcoming = nextRunPreview(EDITOR.time, EDITOR.days);
+    const preview = upcoming
+      ? 'Next run: ' + describeWhen(upcoming)
+      : 'Never runs — pick at least one day';
+
+    document.getElementById('ed-body').innerHTML =
+      '<div class="ed-when">' +
+        '<input type="time" aria-label="Start time" value="' + escapeHtml(EDITOR.time) + '" ' +
+          'onchange="editorTimeChanged(this.value)">' +
+        '<input class="ed-name" aria-label="Routine name" placeholder="name this routine" ' +
+          'value="' + escapeHtml(EDITOR.label) + '" oninput="EDITOR.label = this.value">' +
+      '</div>' +
+      '<div class="days">' +
+        DAY_NAMES.map((day, i) =>
+          '<button type="button" class="daybtn' +
+            (EDITOR.days.includes(i) ? ' on' : '') + '" ' +
+            'aria-pressed="' + EDITOR.days.includes(i) + '" ' +
+            'onclick="editorToggleDay(' + i + ')">' + day + '</button>').join('') +
+      '</div>' +
+      '<div class="ed-presets">' +
+        '<button class="linkbtn" onclick="editorPreset(\'weekdays\')">weekdays</button>' +
+        '<button class="linkbtn" onclick="editorPreset(\'weekend\')">weekend</button>' +
+        '<button class="linkbtn" onclick="editorPreset(\'every\')">every day</button>' +
+      '</div>' +
+      '<div class="ed-next' + (upcoming ? '' : ' warn') + '">' + escapeHtml(preview) + '</div>' +
+      '<div class="group">Steps</div>' +
+      (EDITOR.steps.length
+        ? EDITOR.steps.map(editorStepRow).join('')
+        : '<div class="empty">No steps yet — this routine would do nothing.</div>') +
+      '<button class="btn wide" style="margin-top:10px" onclick="editorAddStep()">' +
+        '＋ Add step</button>';
+  }
+
+  function saveEditor() {
+    const trigger = toMinutes(EDITOR.time);
+    const payload = {
+      time: EDITOR.time,
+      days: EDITOR.days,
+      label: EDITOR.label,
+      enabled: EDITOR.enabled,
+      steps: EDITOR.steps.map(step => {
+        const out = {
+          offset: ((toMinutes(step.at) - trigger) % 1440 + 1440) % 1440,
+          action: step.action,
+        };
+        if (step.uri) out.uri = step.uri;
+        if (step.volume !== '') out.volume = Number(step.volume);
+        return out;
+      }),
+    };
+    if (EDITOR.id) payload.id = EDITOR.id;
+
+    postJson('/schedule_save', payload).then(({ok, data}) => {
+      if (!ok) { showToast('❌ ' + (data.error || 'Could not save')); return; }
+      showToast(data.status === 'updated' ? '⏰ Routine updated' : '⏰ Routine created');
+      closeEditor();
+      loadSchedules();
+    });
   }
 
   function loadSchedules() {
     fetch('/schedules').then(r => r.json()).then(data => {
       const list = data.schedules || [];
+      SCHEDULES = list;
       const enabled = list.filter(s => s.enabled).length;
       document.getElementById('chip-sched').textContent =
         list.length ? (enabled + ' of ' + list.length + ' routines on') : 'No schedules';
@@ -1218,46 +1560,9 @@
     });
   }
 
-  function addSchedule() {
-    const days = [...document.querySelectorAll('.sched-day:checked')].map(c => c.value).join(',');
-    const params = new URLSearchParams({
-      time: document.getElementById('sched-time').value,
-      days: days,
-      label: document.getElementById('sched-label').value.trim(),
-      action: document.getElementById('sched-action').value,
-      uri: document.getElementById('sched-uri').value,
-      volume: document.getElementById('sched-volume').value,
-    });
-    post('/schedule_add', params.toString()).then(({ok, data}) => {
-      if (!ok) { showToast('❌ ' + (data.error || 'Could not add')); return; }
-      showToast('⏰ Routine created');
-      document.getElementById('sched-label').value = '';
-      loadSchedules();
-    });
-  }
 
-  function toggleStepForm(id) {
-    document.getElementById('addstep-' + id).classList.toggle('open');
-  }
 
-  function addStep(id) {
-    const params = new URLSearchParams({
-      id: id,
-      offset: document.getElementById('stepoff-' + id).value || '0',
-      action: document.getElementById('stepact-' + id).value,
-      volume: document.getElementById('stepvol-' + id).value,
-      uri: document.getElementById('stepuri-' + id).value,
-    });
-    post('/schedule_step_add', params.toString()).then(({ok, data}) => {
-      if (!ok) { showToast('❌ ' + (data.error || 'Could not add step')); return; }
-      loadSchedules();
-    });
-  }
 
-  function deleteStep(id, index) {
-    post('/schedule_step_delete', 'id=' + encodeURIComponent(id) + '&index=' + index)
-      .then(() => loadSchedules());
-  }
 
   function deleteSchedule(id) {
     post('/schedule_delete', 'id=' + encodeURIComponent(id))
@@ -1317,10 +1622,12 @@
     });
   }
 
+  document.addEventListener('keydown', e => {
+    if (e.key === 'Escape' && EDITOR) closeEditor();
+  });
+
   // ---- Boot -------------------------------------------------------------
   applyTheme(currentTheme());
-  buildDayPicker();
-  schedActionChanged();
   refreshNowPlaying();
   loadQueue();
   loadSchedules();

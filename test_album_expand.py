@@ -159,6 +159,17 @@ class TestUi:
         assert "playUri(" in row
         assert "queueUri(" in row
 
+    # Two encoders are acceptable here, for different destinations:
+    #   escapeHtml          -- text and attribute values
+    #   encodeURIComponent  -- a value passed as a JS string argument inside
+    #                          an onclick attribute, where escapeHtml is not
+    #                          enough: it turns ' into &#39;, which the HTML
+    #                          parser decodes back to a quote that closes the
+    #                          argument. Percent-encoding leaves no quote at
+    #                          all, provided ' is handled (encodeURIComponent
+    #                          does not escape it on its own).
+    SAFE_ENCODERS = ("escapeHtml", "encodeURIComponent")
+
     def test_album_fields_are_escaped(self, markup):
         """Only lines that build markup matter. Deriving a DOM id with
         .replace(/[^a-zA-Z0-9]/g, '') is safe by construction -- everything
@@ -166,11 +177,19 @@ class TestUi:
         row = markup.split("function renderAlbumRow(", 1)[1].split("\n  }", 1)[0]
         for line in row.splitlines():
             builds_markup = "'<" in line or "'>" in line or '">' in line
-            if not builds_markup or "escapeHtml" in line:
+            if not builds_markup or any(e in line for e in self.SAFE_ENCODERS):
                 continue
             for field in ("a.name", "a.artist", "a.uri", "a.artwork", "a.year", "a.tracks"):
                 if field in line:
                     pytest.fail(f"unescaped {field}: {line.strip()}")
+
+    def test_percent_encoding_also_neutralises_the_apostrophe(self, markup):
+        """encodeURIComponent leaves ' unescaped, so on its own it would not
+        close the hole it is there to close."""
+        row = markup.split("function renderAlbumRow(", 1)[1].split("\n  }", 1)[0]
+        for line in row.splitlines():
+            if "encodeURIComponent" in line:
+                assert r"replace(/'/g, '%27')" in line, line.strip()
 
     def test_the_dom_id_derivation_strips_everything_unsafe(self, markup):
         row = markup.split("function renderAlbumRow(", 1)[1].split("\n  }", 1)[0]
