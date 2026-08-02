@@ -116,16 +116,29 @@
   .player {
     grid-area: player; background: var(--panel);
     border-top: 1px solid var(--line);
-    padding: 10px 12px calc(10px + env(safe-area-inset-bottom));
-    display: flex; align-items: center; gap: 12px; min-width: 0;
+    padding: 8px 12px calc(8px + env(safe-area-inset-bottom));
+    display: flex; flex-direction: column; gap: 7px; min-width: 0;
   }
+  .player-main { display: flex; align-items: center; gap: 12px; min-width: 0; }
   @media (min-width: 760px) {
     .player {
       border-top: 0; border-right: 1px solid var(--line);
-      flex-direction: column; align-items: stretch; gap: 14px;
-      padding: 18px 16px; overflow-y: auto;
+      gap: 14px; padding: 18px 16px; overflow-y: auto;
     }
+    .player-main { flex-direction: column; align-items: stretch; gap: 14px; }
   }
+
+  /* Seek */
+  .seek { display: flex; align-items: center; gap: 8px; }
+  .seek input {
+    flex: 1; min-width: 0; accent-color: var(--amber); height: 18px; margin: 0;
+  }
+  .seek .t {
+    font-family: var(--mono); font-size: 10px; color: var(--muted);
+    font-variant-numeric: tabular-nums; min-width: 32px;
+  }
+  .seek .t.right { text-align: right; }
+  .seek[data-idle="true"] { opacity: .4; pointer-events: none; }
 
   .art {
     width: 46px; height: 46px; flex-shrink: 0; border-radius: 6px;
@@ -347,6 +360,7 @@
 
   <!-- Player: permanent furniture. Never navigated away from. -->
   <aside class="player">
+   <div class="player-main">
     <img class="art" id="art" alt=""
          src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg'%3E%3C/svg%3E">
     <div class="np">
@@ -369,6 +383,15 @@
     <div class="chips">
       <div class="chip" id="chip-queue">Queue —</div>
       <div class="chip" id="chip-sched">No schedules</div>
+    </div>
+   </div>
+
+    <div class="seek" id="seek" data-idle="true">
+      <span class="t" id="seek-now">0:00</span>
+      <input type="range" id="seek-bar" min="0" max="100" value="0" step="1"
+             oninput="seekBarInput(this.value)" onchange="seekBarCommit(this.value)"
+             aria-label="Seek">
+      <span class="t right" id="seek-end">0:00</span>
     </div>
   </aside>
 
@@ -563,6 +586,7 @@
       // had just searched for, and "queue number 1" then queued the wrong
       // track entirely.
       if (data.artwork) document.getElementById('art').src = data.artwork;
+      syncSeek(data);
     }).catch(() => {});
   }
 
@@ -576,6 +600,64 @@
   function quickCmd(cmd) {
     fetch('/' + cmd).then(r => r.json()).then(data => {
       showToast(data.error ? '❌ ' + data.error : '✓ ' + (data.status || cmd));
+      refreshNowPlaying();
+    });
+  }
+
+
+  // ---- Seek ----
+  // Position is polled every few seconds, so the bar has to advance locally
+  // in between or it visibly stutters. Track when the last reading was taken
+  // and extrapolate from it, re-syncing on every poll.
+  const SEEK = {elapsed: 0, duration: 0, playing: false, readAt: 0, dragging: false};
+
+  function fmtTime(seconds) {
+    if (!isFinite(seconds) || seconds < 0) seconds = 0;
+    const m = Math.floor(seconds / 60);
+    const s = Math.floor(seconds % 60);
+    return m + ':' + String(s).padStart(2, '0');
+  }
+
+  function syncSeek(data) {
+    SEEK.elapsed = Number(data.elapsed) || 0;
+    SEEK.duration = Number(data.duration) || 0;
+    SEEK.playing = data.playbackState === 'PLAYING';
+    SEEK.readAt = Date.now();
+    const row = document.getElementById('seek');
+    row.dataset.idle = String(!SEEK.duration);
+    document.getElementById('seek-bar').max = SEEK.duration || 100;
+    document.getElementById('seek-end').textContent = fmtTime(SEEK.duration);
+    paintSeek();
+  }
+
+  function currentElapsed() {
+    if (!SEEK.playing) return SEEK.elapsed;
+    return Math.min(SEEK.elapsed + (Date.now() - SEEK.readAt) / 1000, SEEK.duration);
+  }
+
+  function paintSeek() {
+    // Never move the handle while it is being dragged -- the poll would yank
+    // it back under the user's finger.
+    if (SEEK.dragging || !SEEK.duration) return;
+    const at = currentElapsed();
+    document.getElementById('seek-bar').value = Math.floor(at);
+    document.getElementById('seek-now').textContent = fmtTime(at);
+  }
+
+  function seekBarInput(value) {
+    SEEK.dragging = true;
+    document.getElementById('seek-now').textContent = fmtTime(Number(value));
+  }
+
+  function seekBarCommit(value) {
+    const to = Math.floor(Number(value));
+    // Assume it worked so the bar does not snap back while the request is in
+    // flight; the next poll corrects it if Sonos disagreed.
+    SEEK.elapsed = to;
+    SEEK.readAt = Date.now();
+    SEEK.dragging = false;
+    fetch('/seek?to=' + to).then(r => r.json()).then(data => {
+      if (data.error) showToast('❌ ' + data.error);
       refreshNowPlaying();
     });
   }
@@ -1163,6 +1245,7 @@
   loadQueue();
   loadSchedules();
   setInterval(refreshNowPlaying, 10000);
+  setInterval(paintSeek, 1000);
 </script>
 </body>
 </html>

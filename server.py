@@ -1508,6 +1508,10 @@ class DJServer:
                 "title": "Nothing playing",
                 "artist": "",
                 "album": "",
+                "artwork": "",
+                "uri": "",
+                "elapsed": 0,
+                "duration": 0,
                 "volume": 0,
                 "playbackState": "unknown",
                 "error": result["error"]
@@ -1523,6 +1527,11 @@ class DJServer:
             # artwork silently changed what "play number 3" referred to.
             "artwork": track.get('absoluteAlbumArtUri', ''),
             "uri": track.get('uri', ''),
+            # Both in whole seconds. A client polling every few seconds has to
+            # tick between polls to look right, so it needs the raw numbers
+            # rather than the pre-formatted string Sonos also offers.
+            "elapsed": result.get('elapsedTime', 0),
+            "duration": track.get('duration', 0),
             "volume": result.get('volume', 0),
             "playbackState": result.get('playbackState', 'unknown')
         }
@@ -1604,6 +1613,24 @@ class DJServer:
     @cherrypy.tools.json_out()
     def volume(self, level=None, change=None):
         return self._do_volume(level=level, change=change)
+
+    @cherrypy.expose
+    @cherrypy.tools.json_out()
+    def seek(self, to=None):
+        """Jump to a position in the current track, in whole seconds.
+
+        GET like the other transport controls (pause, skip, volume) rather
+        than POST: it changes nothing that outlives the track, and the CLI
+        addresses them all the same way.
+
+        Sonos wants a bare seconds value here -- passing HH:MM:SS to the
+        timeseek action returns a 500.
+        """
+        seconds = _validate_int(to, "to", 0, 86400)
+        result = self._sonos_request(f"timeseek/{seconds}")
+        if "error" in result:
+            return result
+        return {"status": "seeked", "to": seconds}
 
     @cherrypy.expose
     @cherrypy.tools.json_out()
