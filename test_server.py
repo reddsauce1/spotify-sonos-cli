@@ -404,12 +404,13 @@ class TestDoNowPlaying:
 class TestDoGetQueue:
     def test_getqueue_success(self, dj):
         queue_data = [{"title": "Track 1"}, {"title": "Track 2"}]
-        with patch.object(dj, "_sonos_request", return_value=queue_data) as mock_sr:
+        with patch.object(dj, "_sonos_request",
+                          side_effect=[queue_data, {"trackNo": 3}]) as mock_sr:
             result = dj._do_getqueue()
         # Must request a bounded slice: the unbounded /queue takes longer than
         # the request timeout on a long queue, so it always timed out.
-        mock_sr.assert_called_once_with("queue/50")
-        assert result == {"queue": queue_data, "limit": 50}
+        assert mock_sr.call_args_list[0][0][0] == "queue/50"
+        assert result == {"queue": queue_data, "limit": 50, "track_no": 3}
 
     def test_getqueue_error(self, dj):
         err = {"error": "timeout", "endpoint": "queue"}

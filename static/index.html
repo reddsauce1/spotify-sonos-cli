@@ -1,996 +1,972 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <title>DJ Assistant</title>
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <style>
-        * { box-sizing: border-box; }
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-            max-width: 500px;
-            margin: 0 auto;
-            padding: 20px;
-            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
-            min-height: 100vh;
-            color: white;
-        }
-        h1 { text-align: center; font-size: 1.8em; margin-bottom: 5px; }
-        .subtitle { text-align: center; color: #888; margin-bottom: 20px; font-size: 14px; }
-        .input-container { display: flex; gap: 10px; margin-bottom: 15px; }
-        input[type="text"] {
-            flex: 1;
-            padding: 15px;
-            font-size: 16px;
-            border: none;
-            border-radius: 10px;
-            background: rgba(255,255,255,0.1);
-            color: white;
-        }
-        input[type="text"]::placeholder { color: #888; }
-        button {
-            padding: 15px 20px;
-            font-size: 16px;
-            border: none;
-            border-radius: 10px;
-            background: #1db954;
-            color: white;
-            cursor: pointer;
-            font-weight: bold;
-        }
-        button:hover { background: #1ed760; }
-        button:disabled { background: #555; cursor: not-allowed; }
-        .status {
-            background: rgba(255,255,255,0.1);
-            padding: 15px;
-            border-radius: 10px;
-            margin-bottom: 15px;
-            min-height: 50px;
-            line-height: 1.5;
-        }
-        .results {
-            background: rgba(255,255,255,0.05);
-            border-radius: 10px;
-            overflow: hidden;
-        }
-        .result-item {
-            padding: 12px 15px;
-            border-bottom: 1px solid rgba(255,255,255,0.1);
-            display: flex;
-            gap: 10px;
-            align-items: center;
-        }
-        .result-item:last-child { border-bottom: none; }
-        .result-num { 
-            background: rgba(255,255,255,0.2); 
-            border-radius: 50%; 
-            width: 28px; 
-            height: 28px; 
-            display: flex; 
-            align-items: center; 
-            justify-content: center;
-            font-size: 14px;
-            flex-shrink: 0;
-        }
-        .result-info { flex: 1; min-width: 0; }
-        .song-name { font-weight: bold; margin-bottom: 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-        .artist-name { color: #888; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-        .result-actions {
-            display: flex;
-            gap: 6px;
-            flex-shrink: 0;
-        }
-        .action-btn {
-            padding: 8px 12px;
-            font-size: 11px;
-            border: none;
-            border-radius: 6px;
-            cursor: pointer;
-            font-weight: bold;
-            transition: transform 0.1s;
-        }
-        .action-btn:hover { transform: scale(1.05); }
-        .action-btn:active { transform: scale(0.95); }
-        .btn-play {
-            background: #1db954;
-            color: white;
-        }
-        .btn-next {
-            background: #f59e0b;
-            color: white;
-        }
-        .btn-queue {
-            background: #6366f1;
-            color: white;
-        }
-        .quick-buttons { 
-            display: grid; 
-            grid-template-columns: repeat(4, 1fr); 
-            gap: 8px; 
-            margin-bottom: 15px; 
-        }
-        .quick-btn {
-            padding: 12px 8px;
-            font-size: 12px;
-            background: rgba(255,255,255,0.1);
-            border: none;
-            border-radius: 8px;
-            color: white;
-            cursor: pointer;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            gap: 4px;
-        }
-        .quick-btn:hover { background: rgba(255,255,255,0.2); }
-        .quick-btn .icon { font-size: 18px; }
-        .nowplaying {
-            background: rgba(29, 185, 84, 0.2);
-            border: 1px solid rgba(29, 185, 84, 0.3);
-            padding: 12px 15px;
-            border-radius: 10px;
-            margin-bottom: 15px;
-            font-size: 14px;
-        }
-        .nowplaying .label { color: #1db954; font-size: 11px; text-transform: uppercase; margin-bottom: 5px; }
-        .loading { opacity: 0.6; }
-        .toast {
-            position: fixed;
-            bottom: 20px;
-            left: 50%;
-            transform: translateX(-50%);
-            background: #333;
-            color: white;
-            padding: 12px 24px;
-            border-radius: 8px;
-            font-size: 14px;
-            opacity: 0;
-            transition: opacity 0.3s;
-            z-index: 1000;
-        }
-        .toast.show { opacity: 1; }
+<meta charset="UTF-8">
+<title>DJ Assistant</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0F1319">
+<style>
+  :root {
+    --ground:  #0F1319;
+    --panel:   #171C24;
+    --panel-2: #1E242E;
+    --line:    #29313C;
+    --ink:     #E9ECEF;
+    --ink-2:   #A8B2BF;
+    --muted:   #6F7A88;
+    --amber:   #E8A33D;
+    --amber-2: #8A6224;
+    --live:    #4CAF6E;
+    --stop:    #D9584F;
 
-        /* ---- Schedules ---- */
-        .sched-toggle {
-            width: 100%; margin-top: 14px; padding: 12px;
-            background: rgba(255,255,255,0.06); color: #eee;
-            border: 1px solid rgba(255,255,255,0.12); border-radius: 10px;
-            font-size: 15px; cursor: pointer;
-        }
-        .sched-panel { display: none; margin-top: 10px; }
-        .sched-panel.open { display: block; }
-        .sched-form {
-            display: grid; grid-template-columns: repeat(2, 1fr);
-            gap: 8px; margin-bottom: 12px;
-        }
-        .sched-form input, .sched-form select {
-            padding: 10px; border-radius: 8px; font-size: 15px;
-            border: 1px solid rgba(255,255,255,0.15);
-            background: rgba(0,0,0,0.25); color: #eee;
-        }
-        .sched-form .full { grid-column: 1 / -1; }
-        .sched-days { display: flex; gap: 4px; grid-column: 1 / -1; }
-        .sched-days label {
-            flex: 1; text-align: center; padding: 8px 0; font-size: 13px;
-            border-radius: 8px; background: rgba(0,0,0,0.25);
-            border: 1px solid rgba(255,255,255,0.12); cursor: pointer;
-        }
-        .sched-days input { display: none; }
-        .sched-days input:checked + span { color: #1db954; font-weight: bold; }
-        .sched-item {
-            display: flex; align-items: center; gap: 10px; padding: 12px;
-            border-bottom: 1px solid rgba(255,255,255,0.08);
-        }
-        .sched-when { font-size: 20px; font-variant-numeric: tabular-nums; min-width: 68px; }
-        .sched-meta { flex: 1; font-size: 13px; color: #999; }
-        .sched-off { opacity: 0.45; }
-        .sched-item button {
-            background: none; border: none; font-size: 17px; cursor: pointer; padding: 4px;
-        }
+    --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  }
 
-        .sched-group {
-            font-size: 11px; letter-spacing: 1.5px; color: #777;
-            margin: 18px 0 6px; padding-bottom: 4px;
-            border-bottom: 1px solid rgba(255,255,255,0.08);
-        }
-        .sched-routine {
-            padding: 10px 0; border-bottom: 1px solid rgba(255,255,255,0.06);
-        }
-        .sched-head { display: flex; align-items: center; gap: 10px; }
-        .sched-title { flex: 1; }
-        .sched-title .name { font-size: 15px; }
-        .sched-steps { margin: 6px 0 0 10px; }
-        .sched-step {
-            display: flex; align-items: center; gap: 8px;
-            font-size: 13px; color: #aaa; padding: 3px 0;
-        }
-        .sched-step .off {
-            min-width: 46px; text-align: right; color: #666;
-            font-variant-numeric: tabular-nums;
-        }
-        .sched-step .what { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-        .sched-addstep { display: none; margin: 8px 0 4px 10px; }
-        .sched-addstep.open { display: grid; grid-template-columns: repeat(2, 1fr); gap: 6px; }
-        .sched-addstep input, .sched-addstep select {
-            padding: 8px; border-radius: 6px; font-size: 14px;
-            border: 1px solid rgba(255,255,255,0.15);
-            background: rgba(0,0,0,0.25); color: #eee;
-        }
-        .sched-addstep .full { grid-column: 1 / -1; }
-        .link-btn {
-            background: none; border: none; color: #1db954;
-            font-size: 13px; cursor: pointer; padding: 4px 10px;
-        }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { height: 100%; }
+  body {
+    margin: 0; background: var(--ground); color: var(--ink);
+    font-family: var(--sans); overflow: hidden;
+    -webkit-font-smoothing: antialiased;
+  }
+  button, input, select { font-family: inherit; font-size: inherit; color: inherit; }
+  button { cursor: pointer; }
+  :focus-visible { outline: 2px solid var(--amber); outline-offset: 2px; }
 
-        /* ---- Calendar ---- */
-        .cal-toggle-row { display: flex; gap: 6px; margin: 10px 0; }
-        .cal-toggle-row button {
-            flex: 1; padding: 8px; font-size: 13px; border-radius: 8px; cursor: pointer;
-            background: rgba(255,255,255,0.05); color: #bbb;
-            border: 1px solid rgba(255,255,255,0.12);
-        }
-        .cal-toggle-row button.on { background: rgba(29,185,84,0.18); color: #1db954; }
-        .cal { width: 100%; border-collapse: collapse; font-size: 12px; }
-        .cal th {
-            font-weight: normal; color: #777; padding: 6px 2px; font-size: 11px;
-            border-bottom: 1px solid rgba(255,255,255,0.1);
-        }
-        .cal th.today { color: #1db954; }
-        .cal td {
-            text-align: center; padding: 7px 2px; vertical-align: top;
-            border-bottom: 1px solid rgba(255,255,255,0.05);
-        }
-        .cal td.time {
-            text-align: right; padding-right: 8px; color: #999;
-            font-variant-numeric: tabular-nums; white-space: nowrap;
-        }
-        .cal .hit { cursor: pointer; }
-        .cal .miss { color: #333; }
-        .cal-empty { color: #777; padding: 14px; font-size: 13px; }
+  /* ============ Split shell ============
+     Phone: content fills the screen, player pinned along the bottom.
+     Wide:  the same player becomes a permanent sidebar. One markup, two modes. */
+  .app {
+    display: grid; height: 100dvh;
+    grid-template-areas: "content" "player";
+    grid-template-rows: 1fr auto;
+  }
+  @media (min-width: 760px) {
+    .app {
+      grid-template-areas: "player content";
+      grid-template-columns: 300px 1fr;
+      grid-template-rows: 1fr;
+    }
+  }
 
-        /* ---- Stations ---- */
-        .stn-item {
-            display: flex; align-items: center; gap: 10px; padding: 10px 2px;
-            border-bottom: 1px solid rgba(255,255,255,0.06);
-        }
-        .stn-name { flex: 1; font-size: 14px; }
-        .stn-item button { background: none; border: none; font-size: 16px; cursor: pointer; }
+  /* ============ Player ============ */
+  .player {
+    grid-area: player; background: var(--panel);
+    border-top: 1px solid var(--line);
+    padding: 10px 12px calc(10px + env(safe-area-inset-bottom));
+    display: flex; align-items: center; gap: 12px; min-width: 0;
+  }
+  @media (min-width: 760px) {
+    .player {
+      border-top: 0; border-right: 1px solid var(--line);
+      flex-direction: column; align-items: stretch; gap: 14px;
+      padding: 18px 16px; overflow-y: auto;
+    }
+  }
 
-        /* ---- Add-to-playlist sheet ---- */
-        .sheet {
-            display: none; position: fixed; left: 0; right: 0; bottom: 0;
-            background: #16213e; border-top: 1px solid rgba(255,255,255,0.15);
-            border-radius: 14px 14px 0 0; padding: 16px; z-index: 50;
-            max-height: 70vh; overflow-y: auto;
-        }
-        .sheet.open { display: block; }
-        .sheet h3 { margin: 0 0 10px; font-size: 15px; font-weight: normal; color: #ccc; }
-        .sheet-item {
-            padding: 12px 8px; border-bottom: 1px solid rgba(255,255,255,0.07);
-            cursor: pointer; font-size: 15px;
-        }
-        .sheet-close { width: 100%; margin-top: 10px; padding: 10px; border-radius: 8px;
-            background: rgba(255,255,255,0.06); color: #bbb;
-            border: 1px solid rgba(255,255,255,0.12); cursor: pointer; }
-    </style>
+  .art {
+    width: 46px; height: 46px; flex-shrink: 0; border-radius: 6px;
+    background: linear-gradient(140deg, var(--amber-2), var(--panel-2));
+    object-fit: cover; display: block;
+  }
+  @media (min-width: 760px) { .art { width: 100%; height: auto; aspect-ratio: 1; } }
+
+  .np { min-width: 0; flex: 1; }
+  .np-title {
+    font-weight: 650; font-size: 14px; letter-spacing: -.01em;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .np-sub {
+    font-size: 12px; color: var(--ink-2);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .np-album { font-size: 11px; color: var(--muted); display: none; }
+  @media (min-width: 760px) {
+    .np-title { font-size: 16px; white-space: normal; }
+    .np-sub { white-space: normal; }
+    .np-album { display: block; }
+  }
+
+  .transport { display: flex; gap: 6px; flex-shrink: 0; }
+  @media (min-width: 760px) { .transport { display: grid; grid-template-columns: repeat(4, 1fr); } }
+  .tbtn {
+    background: var(--panel-2); border: 1px solid var(--line); border-radius: 8px;
+    width: 40px; height: 40px; display: grid; place-items: center; font-size: 15px;
+  }
+  @media (min-width: 760px) { .tbtn { width: auto; height: 42px; } }
+  .tbtn.primary { background: var(--amber); border-color: var(--amber); color: #14181D; }
+  .tbtn:active { transform: scale(.94); }
+
+  .vol { display: none; align-items: center; gap: 8px; }
+  @media (min-width: 760px) { .vol { display: flex; } }
+  .vol input { flex: 1; min-width: 0; accent-color: var(--amber); }
+  .lbl {
+    font-family: var(--mono); font-size: 10px; letter-spacing: .1em;
+    text-transform: uppercase; color: var(--muted);
+  }
+
+  .chips { display: none; flex-direction: column; gap: 6px; margin-top: auto; }
+  @media (min-width: 760px) { .chips { display: flex; } }
+  .chip {
+    font-family: var(--mono); font-size: 11px; padding: 4px 8px; border-radius: 5px;
+    background: var(--panel-2); border: 1px solid var(--line); color: var(--ink-2);
+  }
+
+  /* ============ Content ============ */
+  .content { grid-area: content; display: flex; flex-direction: column; min-height: 0; min-width: 0; }
+
+  .tabs {
+    display: flex; gap: 2px; padding: 8px 10px 0; flex-shrink: 0;
+    border-bottom: 1px solid var(--line); overflow-x: auto;
+  }
+  .tab {
+    background: none; border: 0; border-bottom: 2px solid transparent;
+    padding: 9px 12px; color: var(--muted); font-size: 13px; white-space: nowrap;
+  }
+  .tab[aria-selected="true"] { color: var(--amber); border-bottom-color: var(--amber); }
+
+  .pane { display: none; flex: 1; min-height: 0; flex-direction: column; }
+  .pane[data-active="true"] { display: flex; }
+  .pane-scroll { overflow-y: auto; flex: 1; min-height: 0; padding: 12px; }
+  .pane-fixed { padding: 12px 12px 0; flex-shrink: 0; }
+
+  .status {
+    font-size: 12px; color: var(--ink-2); padding: 6px 12px 8px; flex-shrink: 0;
+    min-height: 1.2em;
+  }
+
+  .searchbar { display: flex; gap: 6px; }
+  .searchbar input {
+    flex: 1; padding: 11px 12px; border-radius: 9px; min-width: 0;
+    background: var(--panel); border: 1px solid var(--line);
+  }
+  .searchbar input::placeholder { color: var(--muted); }
+  .btn {
+    background: var(--panel-2); border: 1px solid var(--line);
+    border-radius: 9px; padding: 11px 13px; font-size: 13px; white-space: nowrap;
+  }
+  .btn.primary { background: var(--amber); border-color: var(--amber); color: #14181D; font-weight: 600; }
+  .btn.wide { width: 100%; }
+
+  /* rows */
+  .row {
+    display: flex; align-items: center; gap: 10px; padding: 9px 8px;
+    border-bottom: 1px solid var(--line); min-width: 0;
+  }
+  .row:last-child { border-bottom: 0; }
+  .row-num {
+    font-family: var(--mono); font-size: 11px; color: var(--muted);
+    min-width: 26px; text-align: right; font-variant-numeric: tabular-nums; flex-shrink: 0;
+  }
+  .row-body { flex: 1; min-width: 0; }
+  .row-title { font-size: 13.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .row-sub {
+    font-size: 11.5px; color: var(--ink-2);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .row-acts { display: flex; gap: 4px; flex-shrink: 0; }
+  .abtn {
+    background: var(--panel-2); border: 1px solid var(--line); border-radius: 6px;
+    width: 30px; height: 30px; display: grid; place-items: center; font-size: 13px;
+  }
+  .abtn.go { background: color-mix(in srgb, var(--amber) 22%, var(--panel-2)); border-color: var(--amber-2); }
+
+  .row.played { opacity: .42; }
+  .row.current { background: color-mix(in srgb, var(--amber) 10%, transparent); }
+  .row.current .row-num { color: var(--amber); }
+
+  .empty { color: var(--muted); font-size: 13px; padding: 22px 10px; text-align: center; }
+  .group {
+    font-family: var(--mono); font-size: 10px; letter-spacing: .12em;
+    text-transform: uppercase; color: var(--muted);
+    margin: 16px 0 5px; padding-bottom: 4px; border-bottom: 1px solid var(--line);
+  }
+  .group:first-child { margin-top: 0; }
+
+  /* schedule */
+  .form { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; margin-bottom: 12px; }
+  .form input, .form select {
+    padding: 9px 10px; border-radius: 8px; min-width: 0;
+    background: var(--panel); border: 1px solid var(--line);
+  }
+  .form .full { grid-column: 1 / -1; }
+  .days { display: flex; gap: 4px; grid-column: 1 / -1; }
+  .days label {
+    flex: 1; text-align: center; padding: 8px 0; font-size: 12px; border-radius: 7px;
+    background: var(--panel); border: 1px solid var(--line); cursor: pointer;
+  }
+  .days input { display: none; }
+  .days input:checked + span { color: var(--amber); font-weight: 700; }
+
+  .routine { padding: 10px 0; border-bottom: 1px solid var(--line); }
+  .routine-head { display: flex; align-items: center; gap: 9px; }
+  .routine-time { font-family: var(--mono); font-size: 17px; font-variant-numeric: tabular-nums; }
+  .routine-name { flex: 1; min-width: 0; font-size: 13.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .steps { margin: 6px 0 0 8px; }
+  .step { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--ink-2); padding: 2px 0; }
+  .step .off {
+    font-family: var(--mono); min-width: 44px; text-align: right; color: var(--muted);
+    font-variant-numeric: tabular-nums;
+  }
+  .step .what { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .linkbtn { background: none; border: 0; color: var(--amber); font-size: 12px; padding: 4px 8px; }
+  .addstep { display: none; margin: 8px 0 4px 8px; }
+  .addstep.open { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+  .addstep input, .addstep select {
+    padding: 8px; border-radius: 7px; min-width: 0;
+    background: var(--panel); border: 1px solid var(--line);
+  }
+  .addstep .full { grid-column: 1 / -1; }
+  .off-routine { opacity: .45; }
+
+  /* calendar */
+  .viewtabs { display: flex; gap: 6px; margin-bottom: 10px; }
+  .viewtabs button {
+    flex: 1; padding: 8px; border-radius: 8px; font-size: 12px;
+    background: var(--panel); border: 1px solid var(--line); color: var(--ink-2);
+  }
+  .viewtabs button.on {
+    background: color-mix(in srgb, var(--amber) 18%, var(--panel));
+    border-color: var(--amber-2); color: var(--amber);
+  }
+  .cal { width: 100%; border-collapse: collapse; font-size: 12px; }
+  .cal th {
+    font-weight: 400; color: var(--muted); font-size: 10px; padding: 5px 2px;
+    font-family: var(--mono); letter-spacing: .06em; border-bottom: 1px solid var(--line);
+  }
+  .cal th.today { color: var(--amber); }
+  .cal td { text-align: center; padding: 8px 2px; border-bottom: 1px solid var(--line); }
+  .cal td.time {
+    text-align: right; padding-right: 8px; color: var(--ink-2);
+    font-family: var(--mono); font-variant-numeric: tabular-nums; white-space: nowrap;
+  }
+  .cal td.miss { color: #333B45; }
+  .cal td.hit { cursor: pointer; }
+
+  /* sheet + toast */
+  .sheet {
+    display: none; position: fixed; inset: auto 0 0 0; z-index: 40;
+    background: var(--panel); border-top: 1px solid var(--line);
+    border-radius: 14px 14px 0 0; padding: 16px;
+    padding-bottom: calc(16px + env(safe-area-inset-bottom));
+    max-height: 72vh; overflow-y: auto;
+  }
+  .sheet.open { display: block; }
+  .sheet h3 { margin: 0 0 10px; font-size: 14px; font-weight: 500; color: var(--ink-2); }
+  .sheet-item { padding: 12px 8px; border-bottom: 1px solid var(--line); font-size: 14px; cursor: pointer; }
+  .toast {
+    position: fixed; left: 50%; transform: translateX(-50%);
+    bottom: calc(84px + env(safe-area-inset-bottom)); z-index: 60;
+    background: var(--panel-2); border: 1px solid var(--line); color: var(--ink);
+    padding: 9px 15px; border-radius: 999px; font-size: 13px;
+    opacity: 0; pointer-events: none; transition: opacity .2s;
+    max-width: 88vw; text-align: center;
+  }
+  @media (min-width: 760px) { .toast { bottom: 24px; } }
+  .toast.show { opacity: 1; }
+  @media (prefers-reduced-motion: reduce) {
+    .toast { transition: none; }
+    .tbtn:active { transform: none; }
+  }
+</style>
 </head>
 <body>
-    <h1>🎵 DJ Assistant</h1>
-    <p class="subtitle">Ask me to play something!</p>
-    
-    <div class="nowplaying" id="nowplaying">
-        <div class="label">Now Playing</div>
-        <div id="nowplaying-text">Loading...</div>
-    </div>
-    
-    <div class="input-container">
-        <input type="text" id="message" placeholder="e.g., play some jazz..." autofocus>
-        <button onclick="sendChat()" id="sendBtn">Send</button>
-    </div>
-    
-    <div class="quick-buttons">
-        <button class="quick-btn" onclick="quickCmd('pause')">
-            <span class="icon">⏸</span>
-            <span>Pause</span>
-        </button>
-        <button class="quick-btn" onclick="quickCmd('resume')">
-            <span class="icon">▶️</span>
-            <span>Play</span>
-        </button>
-        <button class="quick-btn" onclick="quickCmd('skip')">
-            <span class="icon">⏭</span>
-            <span>Skip</span>
-        </button>
-        <button class="quick-btn" onclick="loadPlaylists()">
-            <span class="icon">📚</span>
-            <span>Playlists</span>
-        </button>
-        <button class="quick-btn" onclick="quickCmd('volume', 'up')">
-            <span class="icon">🔊</span>
-            <span>Vol +</span>
-        </button>
-        <button class="quick-btn" onclick="quickCmd('volume', 'down')">
-            <span class="icon">🔉</span>
-            <span>Vol -</span>
-        </button>
-        <button class="quick-btn" onclick="quickCmd('getqueue')">
-            <span class="icon">📋</span>
-            <span>Queue</span>
-        </button>
-        <button class="quick-btn" onclick="quickCmd('clearqueue')">
-            <span class="icon">🗑</span>
-            <span>Clear</span>
-        </button>
-    </div>
-    
 
-    <button class="sched-toggle" onclick="toggleSchedules()">⏰ Scheduled actions</button>
+<div class="app">
 
-    <div class="sched-panel" id="sched-panel">
-        <div class="sched-form">
-            <input type="time" id="sched-time" value="07:00">
-            <input type="text" id="sched-label" placeholder="name, e.g. Wake-up">
-            <div class="sched-days" id="sched-days"></div>
-            <select id="sched-action" onchange="schedActionChanged()">
-                <option value="play">▶️ Play</option>
-                <option value="pause">⏸ Pause</option>
-                <option value="resume">▶️ Resume</option>
-                <option value="skip">⏭ Skip</option>
-                <option value="previous">⏮ Previous</option>
-                <option value="volume">🔊 Set volume</option>
-                <option value="clearqueue">🗑 Clear queue</option>
-            </select>
-            <input type="number" id="sched-volume" min="0" max="100" placeholder="volume">
-            <select class="full" id="sched-uri" onchange="maybePasteUri(this)"></select>
-            <button class="quick-btn full" onclick="addSchedule()">Create routine</button>
+  <!-- Player: permanent furniture. Never navigated away from. -->
+  <aside class="player">
+    <img class="art" id="art" alt=""
+         src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg'%3E%3C/svg%3E">
+    <div class="np">
+      <div class="np-title" id="np-title">Loading…</div>
+      <div class="np-sub" id="np-artist"></div>
+      <div class="np-album" id="np-album"></div>
+    </div>
+    <div class="transport">
+      <button class="tbtn" onclick="quickCmd('previous')" title="Previous" aria-label="Previous">⏮</button>
+      <button class="tbtn primary" onclick="quickCmd('resume')" title="Play" aria-label="Play">▶</button>
+      <button class="tbtn" onclick="quickCmd('pause')" title="Pause" aria-label="Pause">⏸</button>
+      <button class="tbtn" onclick="quickCmd('skip')" title="Skip" aria-label="Skip">⏭</button>
+    </div>
+    <div class="vol">
+      <span class="lbl">Vol</span>
+      <input type="range" id="vol" min="0" max="100" value="20"
+             onchange="setVolume(this.value)" aria-label="Volume">
+      <span class="lbl" id="vol-num">–</span>
+    </div>
+    <div class="chips">
+      <div class="chip" id="chip-queue">Queue —</div>
+      <div class="chip" id="chip-sched">No schedules</div>
+    </div>
+  </aside>
+
+  <main class="content">
+    <nav class="tabs" role="tablist">
+      <button class="tab" role="tab" aria-selected="true"  onclick="setTab('search')" id="tab-search">Search</button>
+      <button class="tab" role="tab" aria-selected="false" onclick="setTab('queue')"  id="tab-queue">Queue</button>
+      <button class="tab" role="tab" aria-selected="false" onclick="setTab('lists')"  id="tab-lists">Playlists</button>
+      <button class="tab" role="tab" aria-selected="false" onclick="setTab('sched')"  id="tab-sched">Schedule</button>
+    </nav>
+
+    <section class="pane" id="pane-search" data-active="true">
+      <div class="pane-fixed">
+        <div class="searchbar">
+          <input type="text" id="q" placeholder="Search for a song, artist or album…"
+                 onkeydown="if(event.key==='Enter')doSearch()" aria-label="Search">
+          <button class="btn primary" onclick="doSearch()">Search</button>
+          <button class="btn" onclick="doAsk()" title="Ask in plain English">Ask</button>
         </div>
-        <div class="cal-toggle-row">
-            <button id="view-list" class="on" onclick="setSchedView('list')">☰ List</button>
-            <button id="view-cal" onclick="setSchedView('cal')">🗓 Week</button>
+      </div>
+      <div class="status" id="status">What do you want to hear?</div>
+      <div class="pane-scroll" id="results"></div>
+    </section>
+
+    <section class="pane" id="pane-queue">
+      <div class="pane-fixed">
+        <div class="searchbar">
+          <button class="btn" onclick="loadQueue()">Refresh</button>
+          <button class="btn" onclick="clearQueue()">Clear queue</button>
         </div>
+      </div>
+      <div class="status" id="queue-status">—</div>
+      <div class="pane-scroll" id="queue-list"></div>
+    </section>
+
+    <section class="pane" id="pane-lists">
+      <div class="pane-fixed">
+        <div class="searchbar">
+          <button class="btn" onclick="loadPlaylists()">Refresh</button>
+          <button class="btn" onclick="createPlaylist()">New playlist</button>
+        </div>
+      </div>
+      <div class="status" id="lists-status">—</div>
+      <div class="pane-scroll" id="lists"></div>
+    </section>
+
+    <section class="pane" id="pane-sched">
+      <div class="pane-scroll">
+        <div class="viewtabs">
+          <button id="view-list" class="on" onclick="setSchedView('list')">☰ Routines</button>
+          <button id="view-cal" onclick="setSchedView('cal')">🗓 Week</button>
+        </div>
+
         <div id="sched-list"></div>
         <div id="sched-cal" style="display:none"></div>
 
-        <div class="sched-group">📻 STATIONS</div>
-        <div id="stn-list"></div>
-        <div class="sched-form" style="margin-top:8px">
-            <input class="full" type="text" id="stn-name" placeholder="station name, e.g. Kim Fowley Radio">
-            <input class="full" type="text" id="stn-uri" placeholder="spotify:playlist:37i9dQZF1E8…">
-            <button class="quick-btn full" onclick="addStation()">Save station</button>
+        <div class="group">New routine</div>
+        <div class="form">
+          <input type="time" id="sched-time" value="07:00" aria-label="Time">
+          <input type="text" id="sched-label" placeholder="name" aria-label="Name">
+          <div class="days" id="sched-days"></div>
+          <select id="sched-action" onchange="schedActionChanged()" aria-label="Action">
+            <option value="play">▶ Play</option>
+            <option value="pause">⏸ Pause</option>
+            <option value="resume">▶ Resume</option>
+            <option value="skip">⏭ Skip</option>
+            <option value="previous">⏮ Previous</option>
+            <option value="volume">🔊 Set volume</option>
+            <option value="clearqueue">🗑 Clear queue</option>
+          </select>
+          <input type="number" id="sched-volume" min="0" max="100" placeholder="volume" aria-label="Step volume">
+          <select class="full" id="sched-uri" onchange="maybePasteUri(this)" aria-label="Playlist"></select>
+          <button class="btn primary full" onclick="addSchedule()">Create routine</button>
         </div>
-    </div>
 
-    <div class="status" id="status">🎧 What do you want to hear?</div>
-    
-    <div class="results" id="results"></div>
-    
-    <div class="sheet" id="sheet">
-        <h3 id="sheet-title">Add to playlist</h3>
-        <div id="sheet-body"></div>
-        <button class="sheet-close" onclick="closeSheet()">Cancel</button>
-    </div>
+        <div class="group">📻 Stations</div>
+        <div id="stn-list"></div>
+        <div class="form" style="margin-top:8px">
+          <input class="full" type="text" id="stn-name" placeholder="station name" aria-label="Station name">
+          <input class="full" type="text" id="stn-uri" placeholder="spotify:playlist:37i9dQZF1E8…" aria-label="Station URI">
+          <button class="btn full" onclick="addStation()">Save station</button>
+        </div>
+      </div>
+    </section>
+  </main>
+</div>
 
-    <div class="toast" id="toast"></div>
+<div class="sheet" id="sheet">
+  <h3 id="sheet-title">Add to playlist</h3>
+  <div id="sheet-body"></div>
+  <button class="btn wide" style="margin-top:10px" onclick="closeSheet()">Cancel</button>
+</div>
 
-    <script>
-        // Track, album, artist and playlist names come from Spotify and from
-        // the Sonos queue -- anyone who can get a track into either controls
-        // this text. Escape before it reaches innerHTML.
-        function escapeHtml(value) {
-            if (value === null || value === undefined) return '';
-            return String(value)
-                .replace(/&/g, '&amp;')
-                .replace(/</g, '&lt;')
-                .replace(/>/g, '&gt;')
-                .replace(/"/g, '&quot;')
-                .replace(/'/g, '&#39;');
+<div class="toast" id="toast"></div>
+
+<script>
+  // Track, album, artist and playlist names come from Spotify and from the
+  // Sonos queue -- anyone who can get a track into either controls this text.
+  // Escape before it reaches innerHTML.
+  function escapeHtml(value) {
+    if (value === null || value === undefined) return '';
+    return String(value)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  }
+
+  const DAY_NAMES = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+  const ACTION_ICON = {
+    play: '▶', pause: '⏸', resume: '▶', skip: '⏭',
+    previous: '⏮', volume: '🔊', clearqueue: '🗑',
+  };
+
+  let toastTimer = null;
+  function showToast(message) {
+    const el = document.getElementById('toast');
+    el.textContent = message;
+    el.classList.add('show');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => el.classList.remove('show'), 2600);
+  }
+
+  function post(path, body) {
+    return fetch(path, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+      body: body,
+    }).then(r => r.json().then(data => ({ok: r.ok, data})));
+  }
+
+  // ---- Tabs -------------------------------------------------------------
+  const PANES = ['search', 'queue', 'lists', 'sched'];
+  function setTab(which) {
+    PANES.forEach(p => {
+      document.getElementById('pane-' + p).dataset.active = String(p === which);
+      document.getElementById('tab-' + p).setAttribute('aria-selected', String(p === which));
+    });
+    if (which === 'queue') loadQueue();
+    if (which === 'lists' && !PLAYLISTS.length) loadPlaylists();
+    if (which === 'sched') {
+      loadSources().then(() => {
+        renderStations();
+        document.getElementById('sched-uri').innerHTML = sourceOptions('');
+        loadSchedules();
+      });
+    }
+  }
+
+  // ---- Player -----------------------------------------------------------
+  function refreshNowPlaying() {
+    fetch('/nowplaying').then(r => r.json()).then(data => {
+      const playing = data.title && data.title !== 'Nothing playing';
+      document.getElementById('np-title').textContent = playing ? data.title : 'Nothing playing';
+      document.getElementById('np-artist').textContent = playing ? (data.artist || '') : '';
+      document.getElementById('np-album').textContent = playing ? (data.album || '') : '';
+      if (data.volume !== undefined && data.volume !== null) {
+        document.getElementById('vol').value = data.volume;
+        document.getElementById('vol-num').textContent = data.volume;
+      }
+      if (playing) loadAlbumTracks();
+    }).catch(() => {});
+  }
+
+  function loadAlbumTracks() {
+    fetch('/album_tracks?based_on=nowplaying').then(r => r.json()).then(data => {
+      if (data.artwork) document.getElementById('art').src = data.artwork;
+    }).catch(() => {});
+  }
+
+  function setVolume(level) {
+    fetch('/volume?level=' + encodeURIComponent(level)).then(r => r.json()).then(data => {
+      document.getElementById('vol-num').textContent = level;
+      if (data.error) showToast('❌ ' + data.error);
+    });
+  }
+
+  function quickCmd(cmd) {
+    fetch('/' + cmd).then(r => r.json()).then(data => {
+      showToast(data.error ? '❌ ' + data.error : '✓ ' + (data.status || cmd));
+      refreshNowPlaying();
+    });
+  }
+
+  // ---- Search -----------------------------------------------------------
+  function doSearch() {
+    const q = document.getElementById('q').value.trim();
+    if (!q) return;
+    document.getElementById('status').textContent = 'Searching…';
+    fetch('/search?q=' + encodeURIComponent(q)).then(r => r.json()).then(data => {
+      if (data.error) { document.getElementById('status').textContent = '❌ ' + data.error; return; }
+      const n = (data.results || []).length;
+      document.getElementById('status').textContent = n + ' result' + (n === 1 ? '' : 's');
+      showResults(data.results || []);
+    });
+  }
+
+  // Natural language goes through Claude. Kept separate from Search so the
+  // app stays fully usable when Claude is unavailable.
+  function doAsk() {
+    const q = document.getElementById('q').value.trim();
+    if (!q) return;
+    document.getElementById('status').textContent = 'Thinking…';
+    fetch('/chat?message=' + encodeURIComponent(q)).then(r => r.json()).then(data => {
+      document.getElementById('status').textContent = data.message || 'Done';
+      if (data.results) showResults(data.results);
+      refreshNowPlaying();
+    });
+  }
+
+  function showResults(results) {
+    document.getElementById('results').innerHTML = results.map(item =>
+      '<div class="row">' +
+        '<div class="row-num">' + escapeHtml(String(item.num)) + '</div>' +
+        '<div class="row-body">' +
+          '<div class="row-title">' + escapeHtml(item.name) + '</div>' +
+          '<div class="row-sub">' + escapeHtml(item.artist) +
+            (item.album ? ' · ' + escapeHtml(item.album) : '') + '</div>' +
+        '</div>' +
+        '<div class="row-acts">' +
+          '<button class="abtn go" title="Play now" onclick="trackAction(' + item.num + ', &quot;play&quot;)">▶</button>' +
+          '<button class="abtn" title="Play next" onclick="trackAction(' + item.num + ', &quot;next&quot;)">⏭</button>' +
+          '<button class="abtn" title="Add to queue" onclick="trackAction(' + item.num + ', &quot;queue&quot;)">＋</button>' +
+          '<button class="abtn" title="Add to playlist" onclick="openAddToPlaylist(' + item.num + ')">☰</button>' +
+        '</div>' +
+      '</div>'
+    ).join('') || '<div class="empty">No results.</div>';
+  }
+
+  function trackAction(num, action) {
+    fetch('/' + action + '?num=' + num).then(r => r.json()).then(data => {
+      if (data.error) { showToast('❌ ' + data.error); return; }
+      const verb = {play: '▶️ Playing', next: '⏭️ Up next', queue: '➕ Queued'}[action];
+      showToast(verb + (data.item ? ': ' + data.item.name : ''));
+      refreshNowPlaying();
+    });
+  }
+
+  // ---- Queue ------------------------------------------------------------
+  // track_no comes from Sonos and is the only reliable source for what has
+  // already played: Spotify's own history stays empty because playback
+  // happens through Sonos rather than a Spotify client.
+  function loadQueue() {
+    document.getElementById('queue-status').textContent = 'Loading…';
+    fetch('/getqueue').then(r => r.json()).then(data => {
+      if (data.error) {
+        document.getElementById('queue-status').textContent = '❌ ' + data.error;
+        document.getElementById('queue-list').innerHTML = '';
+        return;
+      }
+      const q = data.queue || [];
+      const pos = data.track_no || 0;
+      const more = q.length >= (data.limit || 0) ? '+' : '';
+      document.getElementById('chip-queue').textContent = 'Queue ' + q.length + more;
+      document.getElementById('queue-status').textContent = pos
+        ? 'Playing ' + pos + ' of ' + q.length + more
+        : q.length + ' tracks';
+      if (!q.length) {
+        document.getElementById('queue-list').innerHTML = '<div class="empty">Queue is empty.</div>';
+        return;
+      }
+      document.getElementById('queue-list').innerHTML = q.map((t, i) => {
+        const n = i + 1;
+        const cls = n < pos ? 'row played' : (n === pos ? 'row current' : 'row');
+        return '<div class="' + cls + '">' +
+          '<div class="row-num">' + (n === pos ? '▶' : n) + '</div>' +
+          '<div class="row-body">' +
+            '<div class="row-title">' + escapeHtml(t.title) + '</div>' +
+            '<div class="row-sub">' + escapeHtml(t.artist) + '</div>' +
+          '</div>' +
+        '</div>';
+      }).join('');
+    });
+  }
+
+  function showQueue(queue) {   // kept for callers that pass a queue directly
+    document.getElementById('queue-list').innerHTML = (queue || []).map((t, i) =>
+      '<div class="row">' +
+        '<div class="row-num">' + (i + 1) + '</div>' +
+        '<div class="row-body">' +
+          '<div class="row-title">' + escapeHtml(t.title) + '</div>' +
+          '<div class="row-sub">' + escapeHtml(t.artist) + '</div>' +
+        '</div>' +
+      '</div>'
+    ).join('');
+  }
+
+  function clearQueue() {
+    if (!confirm('Clear the whole Sonos queue?')) return;
+    fetch('/clearqueue').then(r => r.json()).then(data => {
+      showToast(data.error ? '❌ ' + data.error : '🗑 Queue cleared');
+      loadQueue();
+    });
+  }
+
+  // ---- Playlists & stations ---------------------------------------------
+  let PLAYLISTS = [];
+  let STATIONS = [];
+
+  function loadSources() {
+    return Promise.all([
+      fetch('/my?action=playlists&limit=50').then(r => r.json()).catch(() => ({})),
+      fetch('/stations').then(r => r.json()).catch(() => ({})),
+    ]).then(([pl, st]) => {
+      PLAYLISTS = pl.your_playlists || [];
+      STATIONS = st.stations || [];
+    });
+  }
+
+  function sourceOptions(selected) {
+    const opt = (uri, label) =>
+      '<option value="' + escapeHtml(uri) + '"' +
+      (uri === selected ? ' selected' : '') + '>' + escapeHtml(label) + '</option>';
+    let html = '<option value="">— choose a playlist —</option>';
+    if (PLAYLISTS.length) {
+      html += '<optgroup label="my playlists">' +
+        PLAYLISTS.map(p => opt(p.uri, p.name)).join('') + '</optgroup>';
+    }
+    if (STATIONS.length) {
+      html += '<optgroup label="stations">' +
+        STATIONS.map(s => opt(s.uri, '📻 ' + s.name)).join('') + '</optgroup>';
+    }
+    html += '<option value="__paste__">✎ paste a URI…</option>';
+    return html;
+  }
+
+  function loadPlaylists() {
+    document.getElementById('lists-status').textContent = 'Loading…';
+    loadSources().then(() => {
+      document.getElementById('lists-status').textContent =
+        PLAYLISTS.length + ' playlists · ' + STATIONS.length + ' stations';
+      showPlaylists(PLAYLISTS);
+    });
+  }
+
+  function showPlaylists(playlists) {
+    document.getElementById('lists').innerHTML = playlists.map(item =>
+      '<div class="row">' +
+        '<div class="row-num">' + escapeHtml(String(item.num)) + '</div>' +
+        '<div class="row-body">' +
+          '<div class="row-title">' + escapeHtml(item.name) + '</div>' +
+          '<div class="row-sub">' + escapeHtml(String(item.tracks)) + ' tracks</div>' +
+        '</div>' +
+        '<div class="row-acts">' +
+          '<button class="abtn go" title="Play now" onclick="playUri(\'' + escapeHtml(item.uri) + '\')">▶</button>' +
+          '<button class="abtn" title="Add to queue" onclick="queueUri(\'' + escapeHtml(item.uri) + '\')">＋</button>' +
+        '</div>' +
+      '</div>'
+    ).join('') || '<div class="empty">No playlists found.</div>';
+  }
+
+  function playPlaylist(num) {
+    const item = PLAYLISTS.find(p => p.num === num);
+    if (item) playUri(item.uri);
+  }
+
+  function playUri(uri) {
+    fetch('/play?uri=' + encodeURIComponent(uri)).then(r => r.json()).then(data => {
+      showToast(data.error ? '❌ ' + data.error : '▶️ Playing');
+      refreshNowPlaying();
+    });
+  }
+
+  function queueUri(uri) {
+    fetch('/queue?uri=' + encodeURIComponent(uri)).then(r => r.json()).then(data => {
+      showToast(data.error ? '❌ ' + data.error : '➕ Queued');
+    });
+  }
+
+  function renderStations() {
+    const el = document.getElementById('stn-list');
+    if (!STATIONS.length) {
+      el.innerHTML = '<div class="empty">No stations yet. In Spotify: right-click a song → ' +
+        'Go to Song Radio → Share → Copy link, then paste it below.</div>';
+      return;
+    }
+    el.innerHTML = STATIONS.map(s =>
+      '<div class="row">' +
+        '<div class="row-body"><div class="row-title">📻 ' + escapeHtml(s.name) + '</div></div>' +
+        '<div class="row-acts">' +
+          '<button class="abtn go" title="Play now" onclick="playUri(\'' + escapeHtml(s.uri) + '\')">▶</button>' +
+          '<button class="abtn" title="Add to queue" onclick="queueUri(\'' + escapeHtml(s.uri) + '\')">＋</button>' +
+          '<button class="abtn" title="Delete" onclick="deleteStation(\'' + s.id + '\')">🗑</button>' +
+        '</div>' +
+      '</div>'
+    ).join('');
+  }
+
+  function addStation() {
+    const name = document.getElementById('stn-name').value.trim();
+    const uri = document.getElementById('stn-uri').value.trim();
+    post('/station_add', new URLSearchParams({name, uri}).toString()).then(({ok, data}) => {
+      if (!ok) { showToast('❌ ' + (data.error || 'Could not save')); return; }
+      document.getElementById('stn-name').value = '';
+      document.getElementById('stn-uri').value = '';
+      showToast('📻 Station saved');
+      loadSources().then(renderStations);
+    });
+  }
+
+  function deleteStation(id) {
+    post('/station_delete', 'id=' + encodeURIComponent(id))
+      .then(() => loadSources().then(renderStations));
+  }
+
+  // ---- Add to playlist --------------------------------------------------
+  let sheetTrackNum = null;
+
+  function openAddToPlaylist(num) {
+    sheetTrackNum = num;
+    document.getElementById('sheet-title').textContent = 'Add to playlist';
+    const body = PLAYLISTS.length
+      ? PLAYLISTS.map(p =>
+          '<div class="sheet-item" onclick="addToPlaylist(\'' + escapeHtml(p.uri) + '\')">' +
+          escapeHtml(p.name) + '</div>').join('')
+      : '<div class="empty">No playlists loaded yet — open the Playlists tab.</div>';
+    document.getElementById('sheet-body').innerHTML = body +
+      '<div class="sheet-item" onclick="createPlaylistThenAdd()">＋ New playlist…</div>';
+    document.getElementById('sheet').classList.add('open');
+  }
+
+  function closeSheet() {
+    document.getElementById('sheet').classList.remove('open');
+  }
+
+  function addToPlaylist(playlistUri) {
+    const id = playlistUri.split(':').pop();
+    post('/add_to_playlist',
+      new URLSearchParams({playlist_id: id, num: sheetTrackNum}).toString())
+      .then(({ok, data}) => {
+        closeSheet();
+        showToast(ok ? '✅ Added' : '❌ ' + (data.error || 'Failed'));
+      });
+  }
+
+  function createPlaylist() {
+    const name = prompt('New playlist name');
+    if (!name) return;
+    post('/create_playlist', new URLSearchParams({name}).toString()).then(({ok, data}) => {
+      showToast(ok ? '✅ Created' : '❌ ' + (data.error || 'Failed'));
+      if (ok) loadPlaylists();
+    });
+  }
+
+  function createPlaylistThenAdd() {
+    const name = prompt('New playlist name');
+    if (!name) return;
+    post('/create_playlist', new URLSearchParams({name}).toString()).then(({ok, data}) => {
+      if (!ok) { showToast('❌ ' + (data.error || 'Failed')); return; }
+      loadSources().then(() => addToPlaylist(data.uri));
+    });
+  }
+
+  // ---- Schedules --------------------------------------------------------
+  function buildDayPicker() {
+    document.getElementById('sched-days').innerHTML = DAY_NAMES.map((d, i) =>
+      '<label><input type="checkbox" class="sched-day" value="' + i + '"><span>' + d + '</span></label>'
+    ).join('');
+  }
+
+  function schedActionChanged() {
+    const action = document.getElementById('sched-action').value;
+    document.getElementById('sched-uri').style.display = action === 'play' ? '' : 'none';
+    document.getElementById('sched-volume').style.display =
+      (action === 'play' || action === 'volume') ? '' : 'none';
+  }
+
+  function maybePasteUri(sel) {
+    if (sel.value !== '__paste__') return;
+    const v = prompt('Paste a Spotify URI (playlist, album or Song Radio)');
+    if (!v) { sel.value = ''; return; }
+    const opt = document.createElement('option');
+    opt.value = v.trim();
+    opt.textContent = '✎ ' + v.trim();
+    sel.insertBefore(opt, sel.lastElementChild);
+    sel.value = v.trim();
+  }
+
+  // Grouped by the days they run, because that is how they are thought about:
+  // "my weekday mornings", not "the 07:00 one".
+  function groupName(days) {
+    const key = (days || []).join(',');
+    if (key === '' || key === '0,1,2,3,4,5,6') return 'EVERY DAY';
+    if (key === '0,1,2,3,4') return 'WEEKDAYS';
+    if (key === '5,6') return 'WEEKENDS';
+    return days.map(d => DAY_NAMES[d]).join(' ').toUpperCase();
+  }
+
+  function describeStep(step) {
+    if (step.action === 'play') {
+      let what = 'play ' + (step.uri || '');
+      if (step.volume !== undefined && step.volume !== null) what += ' · vol ' + step.volume;
+      return what;
+    }
+    if (step.action === 'volume') return 'volume ' + step.volume;
+    return step.action;
+  }
+
+  function renderRoutine(s) {
+    const steps = (s.steps || []).map((step, i) =>
+      '<div class="step">' +
+        '<span class="off">+' + escapeHtml(String(step.offset || 0)) + 'm</span>' +
+        '<span>' + escapeHtml(ACTION_ICON[step.action] || '•') + '</span>' +
+        '<span class="what">' + escapeHtml(describeStep(step)) + '</span>' +
+        '<button class="linkbtn" title="Remove step" onclick="deleteStep(\'' + s.id + '\',' + i + ')">✕</button>' +
+      '</div>'
+    ).join('');
+
+    const stepForm =
+      '<div class="addstep" id="addstep-' + s.id + '">' +
+        '<input type="number" min="0" placeholder="+min" id="stepoff-' + s.id + '" value="0">' +
+        '<select id="stepact-' + s.id + '">' +
+          Object.keys(ACTION_ICON).map(a =>
+            '<option value="' + a + '">' + ACTION_ICON[a] + ' ' + a + '</option>').join('') +
+        '</select>' +
+        '<input type="number" min="0" max="100" placeholder="volume" id="stepvol-' + s.id + '">' +
+        '<select class="full" id="stepuri-' + s.id + '" onchange="maybePasteUri(this)">' +
+          sourceOptions('') + '</select>' +
+        '<button class="btn full" onclick="addStep(\'' + s.id + '\')">Add step</button>' +
+      '</div>';
+
+    return '<div class="routine' + (s.enabled ? '' : ' off-routine') + '">' +
+      '<div class="routine-head">' +
+        '<div class="routine-time">' + escapeHtml(s.time) + '</div>' +
+        '<div class="routine-name">' + escapeHtml(s.label || '(unnamed)') + '</div>' +
+        '<button class="abtn" title="Enable/disable" onclick="toggleSchedule(\'' + s.id + '\')">' +
+          (s.enabled ? '🔔' : '🔕') + '</button>' +
+        '<button class="abtn" title="Run now" onclick="runSchedule(\'' + s.id + '\')">⚡</button>' +
+        '<button class="abtn" title="Delete" onclick="deleteSchedule(\'' + s.id + '\')">🗑</button>' +
+      '</div>' +
+      '<div class="steps">' + steps +
+        '<button class="linkbtn" onclick="toggleStepForm(\'' + s.id + '\')">+ step</button>' +
+      '</div>' + stepForm +
+    '</div>';
+  }
+
+  function loadSchedules() {
+    fetch('/schedules').then(r => r.json()).then(data => {
+      const list = data.schedules || [];
+      const enabled = list.filter(s => s.enabled).length;
+      document.getElementById('chip-sched').textContent =
+        list.length ? (enabled + ' of ' + list.length + ' routines on') : 'No schedules';
+      if (!list.length) {
+        document.getElementById('sched-list').innerHTML =
+          '<div class="empty">Nothing scheduled yet.</div>';
+        return;
+      }
+      const groups = {};
+      list.forEach(s => { const g = groupName(s.days); (groups[g] = groups[g] || []).push(s); });
+      const order = ['WEEKDAYS', 'WEEKENDS', 'EVERY DAY'];
+      const names = Object.keys(groups).sort((a, b) => {
+        const ia = order.indexOf(a), ib = order.indexOf(b);
+        return (ia === -1 ? 99 : ia) - (ib === -1 ? 99 : ib);
+      });
+      document.getElementById('sched-list').innerHTML = names.map(g =>
+        '<div class="group">' + escapeHtml(g) + '</div>' +
+        groups[g].sort((a, b) => a.time.localeCompare(b.time)).map(renderRoutine).join('')
+      ).join('');
+    });
+  }
+
+  function addSchedule() {
+    const days = [...document.querySelectorAll('.sched-day:checked')].map(c => c.value).join(',');
+    const params = new URLSearchParams({
+      time: document.getElementById('sched-time').value,
+      days: days,
+      label: document.getElementById('sched-label').value.trim(),
+      action: document.getElementById('sched-action').value,
+      uri: document.getElementById('sched-uri').value,
+      volume: document.getElementById('sched-volume').value,
+    });
+    post('/schedule_add', params.toString()).then(({ok, data}) => {
+      if (!ok) { showToast('❌ ' + (data.error || 'Could not add')); return; }
+      showToast('⏰ Routine created');
+      document.getElementById('sched-label').value = '';
+      loadSchedules();
+    });
+  }
+
+  function toggleStepForm(id) {
+    document.getElementById('addstep-' + id).classList.toggle('open');
+  }
+
+  function addStep(id) {
+    const params = new URLSearchParams({
+      id: id,
+      offset: document.getElementById('stepoff-' + id).value || '0',
+      action: document.getElementById('stepact-' + id).value,
+      volume: document.getElementById('stepvol-' + id).value,
+      uri: document.getElementById('stepuri-' + id).value,
+    });
+    post('/schedule_step_add', params.toString()).then(({ok, data}) => {
+      if (!ok) { showToast('❌ ' + (data.error || 'Could not add step')); return; }
+      loadSchedules();
+    });
+  }
+
+  function deleteStep(id, index) {
+    post('/schedule_step_delete', 'id=' + encodeURIComponent(id) + '&index=' + index)
+      .then(() => loadSchedules());
+  }
+
+  function deleteSchedule(id) {
+    post('/schedule_delete', 'id=' + encodeURIComponent(id))
+      .then(() => { showToast('🗑 Deleted'); loadSchedules(); });
+  }
+
+  function toggleSchedule(id) {
+    post('/schedule_toggle', 'id=' + encodeURIComponent(id)).then(() => loadSchedules());
+  }
+
+  function runSchedule(id) {
+    post('/schedule_run', 'id=' + encodeURIComponent(id))
+      .then(({ok, data}) => showToast(ok ? '⚡ Ran it' : '❌ ' + (data.error || 'Failed')));
+  }
+
+  // ---- Weekly calendar --------------------------------------------------
+  function setSchedView(which) {
+    const isCal = which === 'cal';
+    document.getElementById('sched-list').style.display = isCal ? 'none' : '';
+    document.getElementById('sched-cal').style.display = isCal ? '' : 'none';
+    document.getElementById('view-cal').classList.toggle('on', isCal);
+    document.getElementById('view-list').classList.toggle('on', !isCal);
+    if (isCal) renderCalendar();
+  }
+
+  function renderCalendar() {
+    fetch('/schedules').then(r => r.json()).then(data => {
+      const list = (data.schedules || []).filter(s => s.enabled);
+      const el = document.getElementById('sched-cal');
+      if (!list.length) { el.innerHTML = '<div class="empty">Nothing enabled to show.</div>'; return; }
+      const times = [...new Set(list.map(s => s.time))].sort();
+      // JS getDay() is Sunday-based; the scheduler is Monday-based.
+      const todayIdx = (new Date().getDay() + 6) % 7;
+
+      let html = '<table class="cal"><tr><th></th>' +
+        DAY_NAMES.map((d, i) =>
+          '<th class="' + (i === todayIdx ? 'today' : '') + '">' + d + '</th>').join('') + '</tr>';
+
+      times.forEach(t => {
+        html += '<tr><td class="time">' + escapeHtml(t) + '</td>';
+        for (let d = 0; d < 7; d++) {
+          const here = list.filter(s =>
+            s.time === t && ((s.days || []).length === 0 || s.days.includes(d)));
+          if (!here.length) {
+            html += '<td class="miss">·</td>';
+          } else {
+            const icons = here.map(s =>
+              (s.steps || []).map(st => ACTION_ICON[st.action] || '•').join('')).join(' ');
+            const names = here.map(s => s.label || '(unnamed)').join(', ');
+            html += '<td class="hit" onclick="showToast(\'' +
+              escapeHtml(t + ' · ' + names) + '\')">' + escapeHtml(icons) + '</td>';
+          }
         }
+        html += '</tr>';
+      });
+      el.innerHTML = html + '</table>';
+    });
+  }
 
-        refreshNowPlaying();
-        setInterval(refreshNowPlaying, 30000);
-        
-        function showToast(message) {
-            const toast = document.getElementById('toast');
-            toast.textContent = message;
-            toast.classList.add('show');
-            setTimeout(() => toast.classList.remove('show'), 2500);
-        }
-        
-        function refreshNowPlaying() {
-            fetch('/nowplaying')
-                .then(r => r.json())
-                .then(data => {
-                    const el = document.getElementById('nowplaying-text');
-                    if (data.title && data.title !== 'Nothing playing') {
-                        el.innerHTML = '<strong>' + escapeHtml(data.title) + '</strong> by ' + escapeHtml(data.artist);
-                        loadAlbumTracks();
-                    } else {
-                        el.textContent = 'Nothing playing';
-                    }
-                })
-                .catch(() => {
-                    document.getElementById('nowplaying-text').textContent = 'Unable to fetch';
-                });
-        }
-        
-        document.getElementById('message').addEventListener('keypress', function(e) {
-            if (e.key === 'Enter') sendChat();
-        });
-        
-        function loadAlbumTracks() {
-            fetch('/album_tracks?based_on=nowplaying')
-                .then(r => r.json())
-                .then(data => {
-                    if (data.error) return;
-                    showAlbum(data);
-                })
-                .catch(() => {});
-        }
-        
-        function showAlbum(data) {
-            let html = '<div style="padding: 15px; display: flex; gap: 15px; align-items: flex-start; border-bottom: 1px solid rgba(255,255,255,0.1);">';
-            if (data.artwork) {
-                html += '<img src="' + escapeHtml(data.artwork) + '" style="width: 100px; height: 100px; border-radius: 8px;">';
-            }
-            html += '<div><div style="font-weight: bold; margin-bottom: 4px;">' + escapeHtml(data.album) + '</div>';
-            html += '<div style="color: #888; font-size: 13px;">' + escapeHtml(data.artist) + ' • ' + escapeHtml(data.year) + '</div></div></div>';
-            
-            html += data.tracks.map(item => 
-                '<div class="result-item">' +
-                '<div class="result-num">' + item.num + '</div>' +
-                '<div class="result-info">' +
-                '<div class="song-name">' + escapeHtml(item.name) + '</div>' +
-                '</div>' +
-                '<div class="result-actions">' +
-                '<button class="action-btn btn-play" onclick="trackAction(' + item.num + ', &quot;play&quot;)">▶️</button>' +
-                '<button class="action-btn btn-next" onclick="trackAction(' + item.num + ', &quot;next&quot;)">⏭️</button>' +
-                '<button class="action-btn btn-queue" onclick="trackAction(' + item.num + ', &quot;queue&quot;)">+</button>' +
-                '</div>' +
-                '</div>'
-            ).join('');
-            
-            document.getElementById('results').innerHTML = html;
-            document.getElementById('status').innerHTML = '💿 ' + escapeHtml(data.album);
-        }
-
-        function sendChat() {
-            const input = document.getElementById('message');
-            const message = input.value.trim();
-            if (!message) return;
-            
-            document.getElementById('status').innerHTML = '💭 Thinking...';
-            document.getElementById('status').classList.add('loading');
-            
-            fetch('/chat?message=' + encodeURIComponent(message))
-                .then(r => r.json())
-                .then(data => {
-                    document.getElementById('status').classList.remove('loading');
-                    document.getElementById('status').innerHTML = escapeHtml(data.message) || '✓ Done';
-                    
-                    if (data.results) {
-                        showResults(data.results);
-                    } else {
-                        document.getElementById('results').innerHTML = '';
-                    }
-                    
-                    if (data.action !== 'search') {
-                        refreshNowPlaying();
-                    }
-                })
-                .catch(err => {
-                    document.getElementById('status').classList.remove('loading');
-                    document.getElementById('status').innerHTML = '❌ Error: ' + escapeHtml(err.message);
-                });
-            
-            input.value = '';
-        }
-        
-        function showResults(results) {
-            const html = results.map(item => 
-                '<div class="result-item">' +
-                '<div class="result-num">' + item.num + '</div>' +
-                '<div class="result-info">' +
-                '<div class="song-name">' + escapeHtml(item.name) + '</div>' +
-                '<div class="artist-name">' + escapeHtml(item.artist) + (item.album ? ' • ' + escapeHtml(item.album) : '') + '</div>' +
-                '</div>' +
-                '<div class="result-actions">' +
-                '<button class="action-btn btn-play" onclick="trackAction(' + item.num + ', &quot;play&quot;)">▶️</button>' +
-                '<button class="action-btn btn-next" onclick="trackAction(' + item.num + ', &quot;next&quot;)">⏭️</button>' +
-                '<button class="action-btn btn-queue" onclick="trackAction(' + item.num + ', &quot;queue&quot;)">+</button>' +
-                '<button class="action-btn" onclick="openAddToPlaylist(' + item.num + ')" title="Add to playlist">➕</button>' +
-                '</div>' +
-                '</div>'
-            ).join('');
-            document.getElementById('results').innerHTML = html;
-        }
-        
-        function trackAction(num, action) {
-            const endpoint = '/' + action + '?num=' + num;
-            const messages = {
-                'play': '▶️ Playing now...',
-                'next': '⏭️ Playing next...',
-                'queue': '➕ Adding to queue...'
-            };
-            
-            showToast(messages[action]);
-            
-            fetch(endpoint)
-                .then(r => r.json())
-                .then(data => {
-                    if (data.item) {
-                        const actionText = {
-                            'play': '▶️ Now playing: ',
-                            'next': '⏭️ Up next: ',
-                            'queue': '➕ Queued: '
-                        };
-                        document.getElementById('status').innerHTML = actionText[action] + escapeHtml(data.item.name);
-                        if (action === 'play') {
-                            refreshNowPlaying();
-                        }
-                    } else {
-                        document.getElementById('status').innerHTML = '❌ ' + escapeHtml(data.error || 'Failed');
-                    }
-                });
-        }
-        
-        function quickCmd(cmd, arg) {
-            let url = '/' + cmd;
-            if (cmd === 'volume') {
-                url = '/volume?change=' + (arg === 'up' ? '%2B10' : '-10');
-            }
-            
-            fetch(url)
-                .then(r => r.json())
-                .then(data => {
-                    if (cmd === 'getqueue') {
-                        showQueue(data.queue || []);
-                    } else {
-                        showToast('✓ ' + (data.status || 'Done'));
-                        refreshNowPlaying();
-                    }
-                });
-        }
-        
-        function showQueue(queue) {
-            if (!queue.length) {
-                document.getElementById('status').innerHTML = '📭 Queue is empty';
-                document.getElementById('results').innerHTML = '';
-                return;
-            }
-            document.getElementById('status').innerHTML = '📋 Current queue (' + queue.length + ' tracks)';
-            const html = queue.slice(0, 10).map((item, i) => 
-                '<div class="result-item">' +
-                '<div class="result-num">' + (i + 1) + '</div>' +
-                '<div class="result-info">' +
-                '<div class="song-name">' + escapeHtml(item.title) + '</div>' +
-                '<div class="artist-name">' + escapeHtml(item.artist) + '</div>' +
-                '</div></div>'
-            ).join('');
-            document.getElementById('results').innerHTML = html;
-        }
-        
-        function loadPlaylists() {
-            document.getElementById('status').innerHTML = '📚 Loading playlists...';
-            fetch('/my/playlists?limit=50')
-                .then(r => r.json())
-                .then(data => {
-                    document.getElementById('status').innerHTML = '📚 Your Playlists (' + data.your_playlists.length + ')';
-                    showPlaylists(data.your_playlists);
-                })
-                .catch(err => {
-                    document.getElementById('status').innerHTML = '❌ Error loading playlists';
-                });
-        }
-        
-        function showPlaylists(playlists) {
-            const html = playlists.map(item => 
-                '<div class="result-item">' +
-                '<div class="result-num">' + item.num + '</div>' +
-                '<div class="result-info">' +
-                '<div class="song-name">' + escapeHtml(item.name) + '</div>' +
-                '<div class="artist-name">' + escapeHtml(item.tracks) + ' tracks</div>' +
-                '</div>' +
-                '<div class="result-actions">' +
-                '<button class="action-btn btn-play" onclick="playPlaylist(' + item.num + ')">▶️</button>' +
-                '</div>' +
-                '</div>'
-            ).join('');
-            document.getElementById('results').innerHTML = html;
-        }
-        
-        function playPlaylist(num) {
-            showToast('▶️ Starting playlist...');
-            fetch('/play?num=' + num)
-                .then(r => r.json())
-                .then(data => {
-                    if (data.status) {
-                        document.getElementById('status').innerHTML = '▶️ Playing playlist';
-                        refreshNowPlaying();
-                    } else {
-                        document.getElementById('status').innerHTML = '❌ ' + escapeHtml(data.error || 'Failed');
-                    }
-                });
-        }
-
-        // ---- Schedules ----
-        const DAY_NAMES = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
-        const ACTION_ICON = {
-            play: '▶', pause: '⏸', resume: '▶', skip: '⏭',
-            previous: '⏮', volume: '🔊', clearqueue: '🗑',
-        };
-
-        function buildDayPicker() {
-            document.getElementById('sched-days').innerHTML = DAY_NAMES.map((d, i) =>
-                '<label><input type="checkbox" class="sched-day" value="' + i + '">' +
-                '<span>' + d + '</span></label>'
-            ).join('');
-        }
-
-        function toggleSchedules() {
-            const panel = document.getElementById('sched-panel');
-            panel.classList.toggle('open');
-            if (panel.classList.contains('open')) {
-                loadSources().then(() => {
-                    renderStations();
-                    document.getElementById('sched-uri').innerHTML = sourceOptions('');
-                    loadSchedules();
-                });
-            }
-        }
-
-        function schedActionChanged() {
-            const action = document.getElementById('sched-action').value;
-            document.getElementById('sched-uri').style.display = action === 'play' ? '' : 'none';
-            document.getElementById('sched-volume').style.display =
-                (action === 'play' || action === 'volume') ? '' : 'none';
-        }
-
-        // Routines are grouped by the days they run, because that is how you
-        // think about them -- "my weekday mornings", not "the 07:00 one".
-        function groupName(days) {
-            const key = (days || []).join(',');
-            if (key === '' || key === '0,1,2,3,4,5,6') return 'EVERY DAY';
-            if (key === '0,1,2,3,4') return 'WEEKDAYS';
-            if (key === '5,6') return 'WEEKENDS';
-            return days.map(d => DAY_NAMES[d]).join(' ').toUpperCase();
-        }
-
-        function describeStep(step) {
-            const icon = ACTION_ICON[step.action] || '•';
-            let what = step.action;
-            if (step.action === 'play') {
-                what = 'play ' + (step.uri || '');
-                if (step.volume !== undefined && step.volume !== null) {
-                    what += '  · vol ' + step.volume;
-                }
-            } else if (step.action === 'volume') {
-                what = 'volume ' + step.volume;
-            }
-            return icon + '  ' + what;
-        }
-
-        function renderRoutine(s) {
-            const steps = (s.steps || []).map((step, i) =>
-                '<div class="sched-step">' +
-                    '<span class="off">+' + escapeHtml(String(step.offset || 0)) + 'm</span>' +
-                    '<span class="what">' + escapeHtml(describeStep(step)) + '</span>' +
-                    '<button class="link-btn" title="Remove step" ' +
-                        'onclick="deleteStep(\'' + s.id + '\',' + i + ')">✕</button>' +
-                '</div>'
-            ).join('');
-
-            const stepForm =
-                '<div class="sched-addstep" id="addstep-' + s.id + '">' +
-                    '<input type="number" min="0" placeholder="+min" id="stepoff-' + s.id + '" value="0">' +
-                    '<select id="stepact-' + s.id + '">' +
-                        Object.keys(ACTION_ICON).map(a =>
-                            '<option value="' + a + '">' + ACTION_ICON[a] + ' ' + a + '</option>').join('') +
-                    '</select>' +
-                    '<input type="number" min="0" max="100" placeholder="volume" id="stepvol-' + s.id + '">' +
-                    '<select class="full" id="stepuri-' + s.id + '" ' +
-                        'onchange="maybePasteUri(this)">' + sourceOptions('') + '</select>' +
-                    '<button class="quick-btn full" onclick="addStep(\'' + s.id + '\')">Add step</button>' +
-                '</div>';
-
-            return '<div class="sched-routine' + (s.enabled ? '' : ' sched-off') + '">' +
-                '<div class="sched-head">' +
-                    '<div class="sched-when">' + escapeHtml(s.time) + '</div>' +
-                    '<div class="sched-title"><div class="name">' +
-                        escapeHtml(s.label || '(unnamed)') + '</div></div>' +
-                    '<button title="Enable/disable" onclick="toggleSchedule(\'' + s.id + '\')">' +
-                        (s.enabled ? '🔔' : '🔕') + '</button>' +
-                    '<button title="Run now" onclick="runSchedule(\'' + s.id + '\')">⚡</button>' +
-                    '<button title="Delete" onclick="deleteSchedule(\'' + s.id + '\')">🗑</button>' +
-                '</div>' +
-                '<div class="sched-steps">' + steps +
-                    '<button class="link-btn" onclick="toggleStepForm(\'' + s.id + '\')">+ step</button>' +
-                '</div>' + stepForm +
-            '</div>';
-        }
-
-        function loadSchedules() {
-            fetch('/schedules')
-                .then(r => r.json())
-                .then(data => {
-                    const list = data.schedules || [];
-                    if (!list.length) {
-                        document.getElementById('sched-list').innerHTML =
-                            '<div class="sched-meta" style="padding:12px">Nothing scheduled yet.</div>';
-                        return;
-                    }
-                    const groups = {};
-                    list.forEach(s => {
-                        const g = groupName(s.days);
-                        (groups[g] = groups[g] || []).push(s);
-                    });
-                    const order = ['WEEKDAYS', 'WEEKENDS', 'EVERY DAY'];
-                    const names = Object.keys(groups).sort((a, b) => {
-                        const ia = order.indexOf(a), ib = order.indexOf(b);
-                        return (ia === -1 ? 99 : ia) - (ib === -1 ? 99 : ib);
-                    });
-                    document.getElementById('sched-list').innerHTML = names.map(g =>
-                        '<div class="sched-group">' + escapeHtml(g) + '</div>' +
-                        groups[g].sort((a, b) => a.time.localeCompare(b.time))
-                                 .map(renderRoutine).join('')
-                    ).join('');
-                });
-        }
-
-        function schedPost(path, body) {
-            return fetch(path, {
-                method: 'POST',
-                headers: {'Content-Type': 'application/x-www-form-urlencoded'},
-                body: body,
-            }).then(r => r.json().then(data => ({ok: r.ok, data})));
-        }
-
-        function addSchedule() {
-            const days = [...document.querySelectorAll('.sched-day:checked')]
-                .map(c => c.value).join(',');
-            const params = new URLSearchParams({
-                time: document.getElementById('sched-time').value,
-                days: days,
-                label: document.getElementById('sched-label').value.trim(),
-                action: document.getElementById('sched-action').value,
-                uri: document.getElementById('sched-uri').value.trim(),
-                volume: document.getElementById('sched-volume').value,
-            });
-            schedPost('/schedule_add', params.toString()).then(({ok, data}) => {
-                if (!ok) { showToast('❌ ' + (data.error || 'Could not add')); return; }
-                showToast('⏰ Routine created');
-                document.getElementById('sched-label').value = '';
-                loadSchedules();
-            });
-        }
-
-        function toggleStepForm(id) {
-            document.getElementById('addstep-' + id).classList.toggle('open');
-        }
-
-        function addStep(id) {
-            const params = new URLSearchParams({
-                id: id,
-                offset: document.getElementById('stepoff-' + id).value || '0',
-                action: document.getElementById('stepact-' + id).value,
-                volume: document.getElementById('stepvol-' + id).value,
-                uri: document.getElementById('stepuri-' + id).value.trim(),
-            });
-            schedPost('/schedule_step_add', params.toString()).then(({ok, data}) => {
-                if (!ok) { showToast('❌ ' + (data.error || 'Could not add step')); return; }
-                loadSchedules();
-            });
-        }
-
-        function deleteStep(id, index) {
-            schedPost('/schedule_step_delete', 'id=' + encodeURIComponent(id) + '&index=' + index)
-                .then(() => loadSchedules());
-        }
-
-        function deleteSchedule(id) {
-            schedPost('/schedule_delete', 'id=' + encodeURIComponent(id))
-                .then(() => { showToast('🗑 Deleted'); loadSchedules(); });
-        }
-
-        function toggleSchedule(id) {
-            schedPost('/schedule_toggle', 'id=' + encodeURIComponent(id))
-                .then(() => loadSchedules());
-        }
-
-        function runSchedule(id) {
-            schedPost('/schedule_run', 'id=' + encodeURIComponent(id))
-                .then(({ok, data}) => showToast(ok ? '⚡ Ran it' : '❌ ' + (data.error || 'Failed')));
-        }
-
-
-        // ---- Sources: your playlists + saved stations ----
-        // Cached because the step picker, the calendar and the add-to-playlist
-        // sheet all need them, and /my hits the Spotify API each time.
-        let PLAYLISTS = [];
-        let STATIONS = [];
-
-        function loadSources() {
-            return Promise.all([
-                fetch('/my?action=playlists&limit=50').then(r => r.json()).catch(() => ({})),
-                fetch('/stations').then(r => r.json()).catch(() => ({})),
-            ]).then(([pl, st]) => {
-                PLAYLISTS = pl.your_playlists || [];
-                STATIONS = st.stations || [];
-            });
-        }
-
-        function sourceOptions(selected) {
-            const opt = (uri, label) =>
-                '<option value="' + escapeHtml(uri) + '"' +
-                (uri === selected ? ' selected' : '') + '>' + escapeHtml(label) + '</option>';
-            let html = '<option value="">— choose —</option>';
-            if (PLAYLISTS.length) {
-                html += '<optgroup label="my playlists">' +
-                    PLAYLISTS.map(p => opt(p.uri, p.name)).join('') + '</optgroup>';
-            }
-            if (STATIONS.length) {
-                html += '<optgroup label="stations">' +
-                    STATIONS.map(s => opt(s.uri, '📻 ' + s.name)).join('') + '</optgroup>';
-            }
-            html += '<option value="__paste__">✎ paste a URI…</option>';
-            return html;
-        }
-
-        // ---- Stations ----
-        function renderStations() {
-            const el = document.getElementById('stn-list');
-            if (!STATIONS.length) {
-                el.innerHTML = '<div class="cal-empty">No stations yet. In Spotify: right-click a ' +
-                    'song → Go to Song Radio → Share → Copy link, then paste it below.</div>';
-                return;
-            }
-            el.innerHTML = STATIONS.map(s =>
-                '<div class="stn-item">' +
-                    '<div class="stn-name">📻 ' + escapeHtml(s.name) + '</div>' +
-                    '<button title="Play now" onclick="playUri(\'' + escapeHtml(s.uri) + '\')">▶</button>' +
-                    '<button title="Queue" onclick="queueUri(\'' + escapeHtml(s.uri) + '\')">⏭</button>' +
-                    '<button title="Delete" onclick="deleteStation(\'' + s.id + '\')">🗑</button>' +
-                '</div>'
-            ).join('');
-        }
-
-        function addStation() {
-            const name = document.getElementById('stn-name').value.trim();
-            const uri = document.getElementById('stn-uri').value.trim();
-            schedPost('/station_add', new URLSearchParams({name, uri}).toString())
-                .then(({ok, data}) => {
-                    if (!ok) { showToast('❌ ' + (data.error || 'Could not save')); return; }
-                    document.getElementById('stn-name').value = '';
-                    document.getElementById('stn-uri').value = '';
-                    showToast('📻 Station saved');
-                    loadSources().then(renderStations);
-                });
-        }
-
-        function deleteStation(id) {
-            schedPost('/station_delete', 'id=' + encodeURIComponent(id))
-                .then(() => loadSources().then(renderStations));
-        }
-
-        function playUri(uri) {
-            fetch('/play?uri=' + encodeURIComponent(uri)).then(r => r.json()).then(d => {
-                showToast(d.error ? '❌ ' + d.error : '▶️ Playing');
-                refreshNowPlaying();
-            });
-        }
-
-        function queueUri(uri) {
-            fetch('/queue?uri=' + encodeURIComponent(uri)).then(r => r.json()).then(d => {
-                showToast(d.error ? '❌ ' + d.error : '➕ Queued');
-            });
-        }
-
-        // ---- Add to playlist ----
-        let sheetTrackNum = null;
-
-        function openAddToPlaylist(num) {
-            sheetTrackNum = num;
-            document.getElementById('sheet-title').textContent = 'Add to playlist';
-            const body = PLAYLISTS.length
-                ? PLAYLISTS.map(p =>
-                    '<div class="sheet-item" onclick="addToPlaylist(\'' +
-                    escapeHtml(p.uri) + '\')">' + escapeHtml(p.name) +
-                    '  <span style="color:#777">· ' + escapeHtml(String(p.tracks)) + '</span></div>').join('')
-                : '<div class="cal-empty">No playlists found.</div>';
-            document.getElementById('sheet-body').innerHTML = body +
-                '<div class="sheet-item" onclick="createPlaylistThenAdd()">＋ New playlist…</div>';
-            document.getElementById('sheet').classList.add('open');
-        }
-
-        function closeSheet() {
-            document.getElementById('sheet').classList.remove('open');
-        }
-
-        function addToPlaylist(playlistUri) {
-            const id = playlistUri.split(':').pop();
-            schedPost('/add_to_playlist',
-                new URLSearchParams({playlist_id: id, num: sheetTrackNum}).toString())
-                .then(({ok, data}) => {
-                    closeSheet();
-                    showToast(ok ? '✅ Added' : '❌ ' + (data.error || 'Failed'));
-                });
-        }
-
-        function createPlaylistThenAdd() {
-            const name = prompt('New playlist name');
-            if (!name) return;
-            schedPost('/create_playlist', new URLSearchParams({name}).toString())
-                .then(({ok, data}) => {
-                    if (!ok) { showToast('❌ ' + (data.error || 'Failed')); return; }
-                    loadSources().then(() => addToPlaylist(data.uri));
-                });
-        }
-
-        // ---- Weekly calendar ----
-        function setSchedView(which) {
-            const isCal = which === 'cal';
-            document.getElementById('sched-list').style.display = isCal ? 'none' : '';
-            document.getElementById('sched-cal').style.display = isCal ? '' : 'none';
-            document.getElementById('view-cal').classList.toggle('on', isCal);
-            document.getElementById('view-list').classList.toggle('on', !isCal);
-            if (isCal) renderCalendar();
-        }
-
-        function renderCalendar() {
-            fetch('/schedules').then(r => r.json()).then(data => {
-                const list = (data.schedules || []).filter(s => s.enabled);
-                const el = document.getElementById('sched-cal');
-                if (!list.length) {
-                    el.innerHTML = '<div class="cal-empty">Nothing enabled to show.</div>';
-                    return;
-                }
-                // One row per trigger time; a routine occupies the days it runs.
-                const times = [...new Set(list.map(s => s.time))].sort();
-                // JS getDay() is Sunday-based; the scheduler is Monday-based.
-                const todayIdx = (new Date().getDay() + 6) % 7;
-
-                let html = '<table class="cal"><tr><th></th>' +
-                    DAY_NAMES.map((d, i) =>
-                        '<th class="' + (i === todayIdx ? 'today' : '') + '">' + d + '</th>').join('') +
-                    '</tr>';
-
-                times.forEach(t => {
-                    html += '<tr><td class="time">' + escapeHtml(t) + '</td>';
-                    for (let d = 0; d < 7; d++) {
-                        const here = list.filter(s =>
-                            s.time === t && ((s.days || []).length === 0 || s.days.includes(d)));
-                        if (!here.length) {
-                            html += '<td class="miss">·</td>';
-                        } else {
-                            const icons = here.map(s =>
-                                (s.steps || []).map(st => ACTION_ICON[st.action] || '•').join('')
-                            ).join(' ');
-                            const names = here.map(s => s.label || '(unnamed)').join(', ');
-                            html += '<td class="hit" title="' + escapeHtml(names) + '" ' +
-                                'onclick="showToast(\'' + escapeHtml(t + ' · ' + names) + '\')">' +
-                                escapeHtml(icons) + '</td>';
-                        }
-                    }
-                    html += '</tr>';
-                });
-                el.innerHTML = html + '</table>' +
-                    '<div class="cal-empty">Tap a cell for its name. Disabled routines are hidden.</div>';
-            });
-        }
-
-        function maybePasteUri(sel) {
-            if (sel.value !== '__paste__') return;
-            const v = prompt('Paste a Spotify URI (playlist, album or Song Radio)');
-            if (!v) { sel.value = ''; return; }
-            // Keep it selectable afterwards by adding it as a real option.
-            const opt = document.createElement('option');
-            opt.value = v.trim();
-            opt.textContent = '✎ ' + v.trim();
-            sel.insertBefore(opt, sel.lastElementChild);
-            sel.value = v.trim();
-        }
-
-        buildDayPicker();
-        schedActionChanged();
-    </script>
+  // ---- Boot -------------------------------------------------------------
+  buildDayPicker();
+  schedActionChanged();
+  refreshNowPlaying();
+  loadQueue();
+  loadSchedules();
+  setInterval(refreshNowPlaying, 10000);
+</script>
 </body>
 </html>

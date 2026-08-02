@@ -116,3 +116,20 @@ class TestBadInputStaysA400:
 
         assert exc.value.status == 400
         mock_requests.get.assert_not_called()
+
+
+class TestQueuePosition:
+    """track_no is what separates 'already played' from 'still to come'."""
+
+    def test_reports_the_current_position(self, dj, server_mod):
+        with patch.object(dj, "_sonos_request",
+                          side_effect=[[{"title": "a"}], {"trackNo": 7}]):
+            assert dj._do_getqueue()["track_no"] == 7
+
+    def test_absent_when_state_is_unavailable(self, dj, server_mod):
+        """A failed state call must not lose the queue we did fetch."""
+        with patch.object(dj, "_sonos_request",
+                          side_effect=[[{"title": "a"}], {"error": "down", "endpoint": "state"}]):
+            result = dj._do_getqueue()
+        assert result["queue"] == [{"title": "a"}]
+        assert "track_no" not in result

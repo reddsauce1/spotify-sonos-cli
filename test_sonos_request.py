@@ -399,10 +399,10 @@ class TestDoGetqueue(unittest.TestCase):
     @patch.object(dj, "_sonos_request")
     def test_getqueue_success(self, mock_req):
         queue_data = [{"title": "Track1"}, {"title": "Track2"}]
-        mock_req.return_value = queue_data
+        mock_req.side_effect = [queue_data, {"trackNo": 3}]
         result = dj._do_getqueue()
-        self.assertEqual(result, {"queue": queue_data, "limit": 50})
-        mock_req.assert_called_once_with("queue/50")
+        self.assertEqual(result, {"queue": queue_data, "limit": 50, "track_no": 3})
+        self.assertEqual(mock_req.call_args_list[0][0][0], "queue/50")
 
     @patch.object(dj, "_sonos_request")
     def test_getqueue_error(self, mock_req):

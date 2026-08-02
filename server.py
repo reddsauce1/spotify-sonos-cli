@@ -1410,11 +1410,22 @@ class DJServer:
         `limit` is echoed back so a client can tell a full queue of exactly
         that many tracks from a truncated one, rather than presenting the cap
         as the real total.
+
+        `track_no` is the 1-based position of the track playing now, which is
+        what lets a client separate what has already played from what is still
+        to come. Sonos is the only thing that knows this -- Spotify's
+        recently-played history stays empty because playback happens through
+        Sonos rather than a Spotify client.
         """
         result = self._sonos_request(f"queue/{QUEUE_DISPLAY_LIMIT}")
         if "error" in result:
             return {"queue": [], "error": result["error"]}
-        return {"queue": result, "limit": QUEUE_DISPLAY_LIMIT}
+
+        payload = {"queue": result, "limit": QUEUE_DISPLAY_LIMIT}
+        state = self._sonos_request("state")
+        if "error" not in state:
+            payload["track_no"] = state.get("trackNo")
+        return payload
 
     def _do_clearqueue(self):
         result = self._sonos_request("clearqueue")

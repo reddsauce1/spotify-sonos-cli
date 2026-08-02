@@ -14,6 +14,21 @@ import subprocess
 import pytest
 
 
+
+def extract_function(markup, name):
+    """Return the source of a top-level JS function.
+
+    Matches the closing brace at the same indentation as `function`, so the
+    helper does not silently break when the file is re-indented -- which is
+    exactly what happened when the UI was rewritten.
+    """
+    start = markup.index("function " + name + "(")
+    line_start = markup.rfind("\n", 0, start) + 1
+    indent = markup[line_start:start]
+    close = markup.index("\n" + indent + "}", start)
+    return markup[line_start:close + len(indent) + 2]
+
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 INDEX = os.path.join(HERE, 'static', 'index.html')
 
@@ -69,11 +84,14 @@ class TestEscapingIsApplied:
             if pattern.search(line) and "escapeHtml" not in line:
                 pytest.fail(f"unescaped {field} in: {line.strip()}")
 
-    def test_artwork_url_is_escaped_inside_the_src_attribute(self, markup):
-        """It lands in an attribute, so an unescaped quote breaks out of
-        src="" and can add an event handler."""
-        line = next(l for l in markup.splitlines() if "<img src=" in l)
-        assert "escapeHtml(data.artwork)" in line
+    def test_artwork_is_assigned_as_a_property_not_concatenated(self, markup):
+        """Setting .src as a DOM property involves no HTML parsing, so an
+        artwork URL cannot break out of an attribute at all -- stronger than
+        escaping it into markup. Guard that nobody reverts to concatenation."""
+        assert ".src = data.artwork" in markup
+        for line in markup.splitlines():
+            if "data.artwork" in line and "<img" in line:
+                pytest.fail("artwork concatenated into markup: " + line.strip())
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node not installed")
@@ -84,9 +102,7 @@ class TestEscapingBehaviour:
     def _run(payloads):
         with open(INDEX) as f:
             markup = f.read()
-        start = markup.index("function escapeHtml(")
-        end = markup.index("\n        }", start) + len("\n        }")
-        fn = markup[start:end]
+        fn = extract_function(markup, "escapeHtml")
         script = fn + "\nconsole.log(JSON.stringify(" + json.dumps(payloads) + ".map(escapeHtml)));"
         out = subprocess.run(["node", "-e", script], capture_output=True, text=True, timeout=30)
         assert out.returncode == 0, out.stderr
@@ -157,8 +173,7 @@ class TestWeeklyCalendar:
         with open(INDEX) as f:
             markup = f.read()
         def fn(name):
-            start = markup.index("function " + name + "(")
-            return markup[start:markup.index("\n        }", start) + len("\n        }")]
+            return extract_function(markup, name)
 
         script = (
             "const DAY_NAMES = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];\n"
@@ -217,3 +232,63 @@ class TestWeeklyCalendar:
     def test_label_is_escaped_in_the_cell(self):
         html = self._render([{**self.ROUTINE, "label": '<img src=x onerror=alert(1)>'}])
         assert "<img" not in html.split("<table")[1]
+
+
+class TestSplitLayout:
+    """The layout's whole point: the page never scrolls and the transport
+    controls are never navigated away from."""
+
+    def test_body_does_not_scroll(self, markup):
+        css = markup.split("<style>", 1)[1].split("</style>", 1)[0]
+        # Match the `body {` rule specifically -- a naive split also matches
+        # the earlier `html, body {` reset, which sets only height.
+        rule = re.search(r"^\s*body\s*\{([^}]*)\}", css, re.MULTILINE)
+        assert rule, "no body rule found"
+        assert "overflow: hidden" in rule.group(1)
+
+    def test_shell_fills_the_viewport(self, markup):
+        assert "100dvh" in markup
+
+    def test_player_is_a_sibling_of_the_panes_not_inside_one(self, markup):
+        """If the player lived inside a pane it would disappear when you
+        switched tabs, which is the thing this layout exists to prevent."""
+        body = markup.split("<body>", 1)[1]
+        player = body.index('class="player"')
+        first_pane = body.index('class="pane"')
+        assert player < first_pane
+        # ...and it must not be nested inside the <main> that holds the panes.
+        main_start = body.index("<main")
+        assert player < main_start
+
+    def test_transport_lives_in_the_player(self, markup):
+        body = markup.split("<body>", 1)[1]
+        player_block = body[body.index('class="player"'):body.index("</aside>")]
+        for cmd in ("previous", "resume", "pause", "skip"):
+            assert "quickCmd('" + cmd + "')" in player_block
+
+    @pytest.mark.parametrize("pane", ["search", "queue", "lists", "sched"])
+    def test_each_pane_has_a_tab(self, markup, pane):
+        assert 'id="tab-' + pane + '"' in markup
+        assert 'id="pane-' + pane + '"' in markup
+
+    def test_only_one_pane_starts_active(self, markup):
+        # Count in the markup only: the string also appears in the CSS
+        # selector `.pane[data-active="true"]`.
+        body = markup.split("<body>", 1)[1]
+        assert body.count('data-active="true"') == 1
+
+    def test_panes_scroll_internally(self, markup):
+        """Scrolling belongs to the list, not the page."""
+        assert ".pane-scroll" in markup
+        css = markup.split("<style>", 1)[1].split("</style>", 1)[0]
+        rule = css.split(".pane-scroll {", 1)[1].split("}", 1)[0]
+        assert "overflow-y: auto" in rule
+
+    def test_sidebar_appears_on_wide_screens(self, markup):
+        assert 'grid-template-areas: "player content"' in markup
+
+    def test_queue_marks_played_current_and_upcoming(self, markup):
+        """track_no is what makes 'previously played' possible at all."""
+        assert "data.track_no" in markup
+        assert "row played" in markup
+        assert "row current" in markup
