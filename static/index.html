@@ -6,21 +6,83 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#0F1319">
 <style>
+  /* Dark is the default ground. Every colour flows through these tokens, so a
+     theme is a second block rather than a sweep through the stylesheet.
+     color-scheme is set too, or the native time / number / range controls
+     render as dark widgets on a light page. */
   :root {
-    --ground:  #0F1319;
-    --panel:   #171C24;
-    --panel-2: #1E242E;
-    --line:    #29313C;
-    --ink:     #E9ECEF;
-    --ink-2:   #A8B2BF;
-    --muted:   #6F7A88;
-    --amber:   #E8A33D;
-    --amber-2: #8A6224;
-    --live:    #4CAF6E;
-    --stop:    #D9584F;
+    color-scheme: dark;
+    --ground:   #0F1319;
+    --panel:    #171C24;
+    --panel-2:  #1E242E;
+    --line:     #29313C;
+    --ink:      #E9ECEF;
+    --ink-2:    #A8B2BF;
+    --muted:    #7D8896;
+    --faint:    #333B45;
+    --amber:    #E8A33D;
+    --amber-2:  #8A6224;
+    --on-amber: #14181D;
+    --live:     #4CAF6E;
+    --stop:     #D9584F;
 
     --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
     --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  }
+
+  /* Light is not an inversion: the amber darkens so it still reads on a pale
+     ground, and takes white text instead of near-black. */
+  @media (prefers-color-scheme: light) {
+    :root:not([data-theme="dark"]) {
+      color-scheme: light;
+      --ground:   #E7EAEE;
+      --panel:    #FFFFFF;
+      --panel-2:  #F1F4F7;
+      --line:     #D3D9E0;
+      --ink:      #141821;
+      --ink-2:    #414C5A;
+      --muted:    #59636F;
+      --faint:    #C6CDD6;
+      --amber:    #8A580D;
+      --amber-2:  #DEBE86;
+      --on-amber: #FFFFFF;
+      --live:     #2E7D4F;
+      --stop:     #B03A30;
+    }
+  }
+
+  /* An explicit choice wins over the OS in both directions. */
+  :root[data-theme="light"] {
+    color-scheme: light;
+    --ground:   #E7EAEE;
+    --panel:    #FFFFFF;
+    --panel-2:  #F1F4F7;
+    --line:     #D3D9E0;
+    --ink:      #141821;
+    --ink-2:    #414C5A;
+    --muted:    #59636F;
+    --faint:    #C6CDD6;
+    --amber:    #8A580D;
+    --amber-2:  #DEBE86;
+    --on-amber: #FFFFFF;
+    --live:     #2E7D4F;
+    --stop:     #B03A30;
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --ground:   #0F1319;
+    --panel:    #171C24;
+    --panel-2:  #1E242E;
+    --line:     #29313C;
+    --ink:      #E9ECEF;
+    --ink-2:    #A8B2BF;
+    --muted:    #7D8896;
+    --faint:    #333B45;
+    --amber:    #E8A33D;
+    --amber-2:  #8A6224;
+    --on-amber: #14181D;
+    --live:     #4CAF6E;
+    --stop:     #D9584F;
   }
 
   * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
@@ -95,7 +157,7 @@
     width: 40px; height: 40px; display: grid; place-items: center; font-size: 15px;
   }
   @media (min-width: 760px) { .tbtn { width: auto; height: 42px; } }
-  .tbtn.primary { background: var(--amber); border-color: var(--amber); color: #14181D; }
+  .tbtn.primary { background: var(--amber); border-color: var(--amber); color: var(--on-amber); }
   .tbtn:active { transform: scale(.94); }
 
   .vol { display: none; align-items: center; gap: 8px; }
@@ -146,7 +208,7 @@
     background: var(--panel-2); border: 1px solid var(--line);
     border-radius: 9px; padding: 11px 13px; font-size: 13px; white-space: nowrap;
   }
-  .btn.primary { background: var(--amber); border-color: var(--amber); color: #14181D; font-weight: 600; }
+  .btn.primary { background: var(--amber); border-color: var(--amber); color: var(--on-amber); font-weight: 600; }
   .btn.wide { width: 100%; }
 
   /* rows */
@@ -249,7 +311,7 @@
     text-align: right; padding-right: 8px; color: var(--ink-2);
     font-family: var(--mono); font-variant-numeric: tabular-nums; white-space: nowrap;
   }
-  .cal td.miss { color: #333B45; }
+  .cal td.miss { color: var(--faint); }
   .cal td.hit { cursor: pointer; }
 
   /* sheet + toast */
@@ -316,6 +378,8 @@
       <button class="tab" role="tab" aria-selected="false" onclick="setTab('queue')"  id="tab-queue">Queue</button>
       <button class="tab" role="tab" aria-selected="false" onclick="setTab('lists')"  id="tab-lists">Playlists</button>
       <button class="tab" role="tab" aria-selected="false" onclick="setTab('sched')"  id="tab-sched">Schedule</button>
+      <button class="tab" style="margin-left:auto" onclick="cycleTheme()"
+              id="theme-btn" title="Theme" aria-label="Change theme">Auto</button>
     </nav>
 
     <section class="pane" id="pane-search" data-active="true">
@@ -438,6 +502,30 @@
       headers: {'Content-Type': 'application/x-www-form-urlencoded'},
       body: body,
     }).then(r => r.json().then(data => ({ok: r.ok, data})));
+  }
+
+  // ---- Theme ----
+  // Three states rather than two: "auto" follows the OS, which is what most
+  // people want, but an explicit choice has to be able to override it in
+  // both directions -- otherwise picking light on a dark-mode phone silently
+  // does nothing.
+  const THEMES = ['auto', 'light', 'dark'];
+
+  function applyTheme(mode) {
+    if (mode === 'auto') document.documentElement.removeAttribute('data-theme');
+    else document.documentElement.setAttribute('data-theme', mode);
+    try { localStorage.setItem('dj-theme', mode); } catch (e) {}
+    const btn = document.getElementById('theme-btn');
+    if (btn) btn.textContent = {auto: 'Auto', light: 'Light', dark: 'Dark'}[mode];
+  }
+
+  function currentTheme() {
+    try { return localStorage.getItem('dj-theme') || 'auto'; } catch (e) { return 'auto'; }
+  }
+
+  function cycleTheme() {
+    const next = THEMES[(THEMES.indexOf(currentTheme()) + 1) % THEMES.length];
+    applyTheme(next);
   }
 
   // ---- Tabs -------------------------------------------------------------
@@ -1068,6 +1156,7 @@
   }
 
   // ---- Boot -------------------------------------------------------------
+  applyTheme(currentTheme());
   buildDayPicker();
   schedActionChanged();
   refreshNowPlaying();

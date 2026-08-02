@@ -424,6 +424,20 @@ Note that auth is *not* based on source IP. `cloudflared` connects over
 loopback, so tunnelled internet traffic is indistinguishable from a local
 request by address alone — exempting localhost would expose everything.
 
+## Themes
+
+The UI follows your operating system's light or dark setting by default. The
+button at the right of the tab bar cycles **Auto → Light → Dark**, and the
+choice is remembered per browser.
+
+Every colour flows through CSS custom properties, so a theme is one token
+block rather than a sweep through the stylesheet — tests assert that no
+hard-coded colour creeps back in, that light and dark define the same token
+set, and that every text/background pair clears WCAG AA (4.5:1) in both.
+
+Light is not an inversion: the amber accent darkens so it still reads on a
+pale ground, and takes white text instead of near-black.
+
 ## The queue
 
 The Queue tab shows a window around the current track — already-played tracks
