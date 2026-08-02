@@ -11,10 +11,12 @@ from unittest.mock import patch
 
 import pytest
 
+from paths import INDEX_HTML
+
 
 @pytest.fixture(scope="module")
 def markup():
-    with open("static/index.html") as handle:
+    with open(INDEX_HTML) as handle:
         return handle.read()
 
 

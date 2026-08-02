@@ -13,6 +13,9 @@ import subprocess
 
 import pytest
 
+from paths import INDEX_HTML as INDEX, SERVER_PY
+
+
 
 
 def extract_function(markup, name):
@@ -28,9 +31,6 @@ def extract_function(markup, name):
     close = markup.index("\n" + indent + "}", start)
     return markup[line_start:close + len(indent) + 2]
 
-
-HERE = os.path.dirname(os.path.abspath(__file__))
-INDEX = os.path.join(HERE, 'static', 'index.html')
 
 
 @pytest.fixture(scope="module")
@@ -55,7 +55,7 @@ class TestExtraction:
         """The point of the extraction: server.py should no longer carry the
         app's markup. The small login page stays inline deliberately, so it
         still renders if static/ is missing."""
-        with open(os.path.join(HERE, 'server.py')) as f:
+        with open(SERVER_PY) as f:
             source = f.read()
         assert "function escapeHtml" not in source
         assert "refreshNowPlaying" not in source

@@ -9,6 +9,8 @@ from unittest.mock import patch
 import pytest
 import requests
 
+from paths import QUEUEEDIT_JS
+
 
 QUEUE = [{"title": "Shampoo", "artist": "A"},
          {"title": "Hey", "artist": "B"},
@@ -131,17 +133,14 @@ class TestSonosActionPlugin:
 
     def test_plugin_is_in_the_repo(self):
         import os
-        here = os.path.dirname(os.path.abspath(__file__))
-        path = os.path.join(here, 'sonos-actions', 'queueedit.js')
-        assert os.path.isfile(path), "the plugin must be version-controlled here"
-        source = open(path).read()
+        assert os.path.isfile(QUEUEEDIT_JS), \
+            "the plugin must be version-controlled here"
+        source = open(QUEUEEDIT_JS).read()
         assert "registerAction('queuemove'" in source
         assert "registerAction('queueremove'" in source
 
     def test_plugin_accounts_for_the_insert_before_gap(self):
         """Moving a track down has to add one, because InsertBefore counts
         positions in the pre-move numbering."""
-        import os
-        here = os.path.dirname(os.path.abspath(__file__))
-        source = open(os.path.join(here, 'sonos-actions', 'queueedit.js')).read()
+        source = open(QUEUEEDIT_JS).read()
         assert "to > from ? to + 1 : to" in source

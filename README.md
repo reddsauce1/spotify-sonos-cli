@@ -447,13 +447,21 @@ Re-run auth.py on your Mac and copy the new `.cache` file to the Pi.
 ### Running tests
 
 ```bash
-pip install pytest
-python -m pytest -q
+./venv/bin/pip install -r requirements-dev.txt
+./venv/bin/pytest -q
 ```
 
-The suite mocks Spotify, Sonos and CherryPy, so it needs no network, no
-credentials and no running server. `conftest.py` feeds `server.py` a fake
-config at import time.
+The suite lives in `tests/` and mocks Spotify, Sonos and CherryPy, so it needs
+no network, no credentials and no running server. `tests/conftest.py` feeds
+`server.py` a fake config at import time, and points the schedule and station
+files at a temp directory for every test — nothing can rewrite the routines
+that actually fire in the morning.
+
+It runs from anywhere: the repo root, inside `tests/`, or by absolute path
+from elsewhere. `pytest.ini` puts the repo root on the import path so
+`import server` resolves, and `tests/paths.py` anchors the handful of tests
+that read real files — `server.py`, `static/index.html`, `README.md` — to the
+repo rather than to the working directory.
 
 ## Authentication
 
@@ -623,8 +631,14 @@ spotify-server/
 ├── schedules.json        # Scheduled routines       (gitignored)
 ├── stations.json         # Saved radio URIs         (gitignored)
 ├── logs/                 # rotated app log + crash log (gitignored)
-├── conftest.py           # Test fixtures; mocks Spotify and config
-└── test_*.py             # Test suite -- no network or credentials needed
+├── requirements.txt      # Runtime dependencies, pinned
+├── requirements-dev.txt  # Test dependencies
+├── pytest.ini            # testpaths + import path for the suite
+├── docs/                 # Notes kept out of the README
+└── tests/                # Test suite -- no network or credentials needed
+    ├── conftest.py       #   fixtures; mocks Spotify and config
+    ├── paths.py          #   locations of the real files some tests read
+    └── test_*.py
 
 ~/node-sonos-http-api/
 └── (Sonos control server, port 5005)

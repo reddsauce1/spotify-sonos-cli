@@ -18,6 +18,8 @@ import re
 
 import pytest
 
+from paths import README_MD, SERVER_PY
+
 
 class TestTheHandlerIsBounded:
     def test_it_rotates(self, server_mod):
@@ -88,7 +90,7 @@ class TestOneStream:
     @pytest.mark.parametrize("logger_name", ["dj", "cherrypy.access",
                                              "cherrypy.error"])
     def test_all_three_can_share_the_handler(self, server_mod, logger_name):
-        assert "_route_cherrypy_logs_to_file" in open("server.py").read()
+        assert "_route_cherrypy_logs_to_file" in open(SERVER_PY).read()
 
     def test_our_logger_does_not_propagate(self, server_mod):
         """cherrypy's loggers carry their own handlers and propagate, so a
@@ -99,13 +101,13 @@ class TestOneStream:
         """Left on, CherryPy writes both logs to stdout as well -- every line
         stored twice, and the crash log growing exactly as fast as the file
         being rotated."""
-        source = open("server.py").read()
+        source = open(SERVER_PY).read()
         assert "'log.screen': False" in source
 
     def test_cherrypy_logs_are_rerouted_after_config_update(self):
         """config.update installs the default screen handlers, so replacing
         them earlier just gets them added back."""
-        source = open("server.py").read()
+        source = open(SERVER_PY).read()
         update = source.index("cherrypy.config.update({")
         reroute = source.index("_route_cherrypy_logs_to_file()", update)
         assert update < reroute
@@ -122,7 +124,7 @@ class TestTheCrashLogStaysSeparate:
         says which one to read. Checking for the filenames alone is not
         enough -- they also appear in the plist listing, so that would pass
         even with every word of explanation deleted."""
-        readme = open("README.md").read()
+        readme = open(README_MD).read()
         prose = re.sub(r"```.*?```", "", readme, flags=re.S)   # drop code blocks
 
         assert "logs/spotify-server.log" in prose, "the app log is not described"
@@ -132,7 +134,7 @@ class TestTheCrashLogStaysSeparate:
     def test_the_readme_states_the_actual_cap(self, server_mod):
         """So a reader can tell whether the file they are looking at is
         oversized without going to read the source."""
-        prose = re.sub(r"```.*?```", "", open("README.md").read(), flags=re.S)
+        prose = re.sub(r"```.*?```", "", open(README_MD).read(), flags=re.S)
         megabytes = server_mod.LOG_MAX_BYTES // (1024 * 1024)
         assert re.search(r"%dMB" % megabytes, prose), \
             f"the {megabytes}MB per-file cap is not stated"

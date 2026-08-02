@@ -22,6 +22,8 @@ import subprocess
 
 import pytest
 
+from paths import INDEX_HTML
+
 
 node = pytest.mark.skipif(shutil.which("node") is None,
                           reason="node is needed to run the browser copy")
@@ -86,7 +88,7 @@ def browser_answers(tmp_path_factory):
         pytest.skip("node unavailable")
     tmp = tmp_path_factory.mktemp("nextrun")
 
-    markup = open("static/index.html").read()
+    markup = open(INDEX_HTML).read()
     script = tmp / "app.js"
     script.write_text(markup.split("<script>", 1)[1].split("</script>", 1)[0])
 
@@ -146,7 +148,7 @@ class TestBothUseMondayFirstWeekdays:
     Mixing them up shifts every routine by a day."""
 
     def test_the_browser_converts(self):
-        markup = open("static/index.html").read()
+        markup = open(INDEX_HTML).read()
         body = re.search(r"function nextRunPreview\(time, days\) \{.*?\n  \}",
                          markup, re.S).group(0)
         assert "(when.getDay() + 6) % 7" in body

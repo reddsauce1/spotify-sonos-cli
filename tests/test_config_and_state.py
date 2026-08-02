@@ -7,6 +7,7 @@ unbounded dict in a process that never restarts on its own.
 """
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -14,8 +15,9 @@ import threading
 
 import pytest
 
+from paths import PROJECT_ROOT as HERE
 
-HERE = os.path.dirname(os.path.abspath(__file__))
+
 
 
 class TestDefaults:
@@ -293,3 +295,41 @@ class TestSearchResultsAreThreadSafe:
 
 
 # ==================== request body =======================================
+
+
+# The suite lives in tests/ and reads real files out of the repo root, so how
+# it finds them is itself worth a test.
+
+
+class TestTheSuiteIsLocationIndependent:
+    def test_project_root_is_the_repo_not_the_tests_folder(self):
+        import paths
+        assert os.path.isfile(os.path.join(paths.PROJECT_ROOT, "server.py"))
+        assert not paths.PROJECT_ROOT.rstrip("/").endswith("tests")
+
+    @pytest.mark.parametrize("name", ["INDEX_HTML", "SERVER_PY", "README_MD",
+                                      "QUEUEEDIT_JS"])
+    def test_every_declared_path_exists(self, name):
+        import paths
+        assert os.path.isfile(getattr(paths, name)), name
+
+    def test_no_test_reads_a_file_by_a_cwd_relative_path(self):
+        """Those only worked while the suite sat in the repo root and pytest
+        was invoked from there; from inside tests/ they raise
+        FileNotFoundError at collection time."""
+        import glob
+        import re
+        offenders = []
+        for path in glob.glob(os.path.join(os.path.dirname(__file__), "test_*.py")):
+            for line in open(path):
+                if re.search(r'open\(\s*[\'"](?!/)[\w./-]+[\'"]', line):
+                    offenders.append(f"{os.path.basename(path)}: {line.strip()}")
+        assert not offenders, "cwd-relative reads: " + "; ".join(offenders)
+
+    def test_pytest_config_puts_the_repo_root_on_the_path(self):
+        """Without this the bare `pytest` command cannot import server at all.
+        It is easy to believe it is unnecessary, because `python -m pytest`
+        adds the working directory itself and so passes either way."""
+        import paths
+        ini = open(os.path.join(paths.PROJECT_ROOT, "pytest.ini")).read()
+        assert re.search(r"^pythonpath\s*=\s*\.", ini, re.M)

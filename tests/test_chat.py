@@ -16,6 +16,8 @@ from unittest.mock import patch
 import pytest
 import requests
 
+from paths import SERVER_PY
+
 
 ACTIONS_WITH_NO_ARGS = ["pause", "resume", "skip", "previous", "clear"]
 
@@ -114,8 +116,7 @@ class TestEveryActionCapturesItsOutcome:
         import os
         import re
 
-        here = os.path.dirname(os.path.abspath(__file__))
-        with open(os.path.join(here, 'server.py')) as f:
+        with open(SERVER_PY) as f:
             source = f.read()
 
         chat_body = source.split("def chat(", 1)[1].split("\n    @cherrypy.expose", 1)[0]

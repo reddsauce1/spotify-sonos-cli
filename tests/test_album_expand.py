@@ -8,9 +8,9 @@ from unittest.mock import patch
 
 import pytest
 
+from paths import INDEX_HTML as INDEX
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-INDEX = os.path.join(HERE, 'static', 'index.html')
+
 
 
 @pytest.fixture(scope="module")

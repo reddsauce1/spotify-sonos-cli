@@ -15,6 +15,8 @@ import requests
 from spotipy.exceptions import SpotifyException
 from spotipy.oauth2 import SpotifyOauthError
 
+from paths import SERVER_PY
+
 
 class TestLoggerConfiguration:
     def test_has_its_own_handler(self, server_mod):
@@ -35,8 +37,7 @@ class TestLoggerConfiguration:
         because pytest's caplog attaches its own root handler; asserting on
         that would test pytest, not this server.
         """
-        here = os.path.dirname(os.path.abspath(__file__))
-        with open(os.path.join(here, 'server.py')) as f:
+        with open(SERVER_PY) as f:
             lines = f.readlines()
         # Match a call, not the comment that explains why we avoid it.
         calls = [
@@ -51,8 +52,7 @@ class TestLoggerConfiguration:
         assert "%(levelname)" in fmt
 
     def test_no_print_calls_remain_in_server(self):
-        here = os.path.dirname(os.path.abspath(__file__))
-        with open(os.path.join(here, 'server.py')) as f:
+        with open(SERVER_PY) as f:
             source = f.read()
         # Ignore the word inside strings/comments; look for real calls.
         assert not re.search(r'^\s*print\(', source, re.MULTILINE)
@@ -142,8 +142,7 @@ class TestSecretsNeverLogged:
 
     def test_source_never_logs_credential_variables(self):
         """Guard against a future log line interpolating a secret."""
-        here = os.path.dirname(os.path.abspath(__file__))
-        with open(os.path.join(here, 'server.py')) as f:
+        with open(SERVER_PY) as f:
             lines = f.readlines()
 
         secrets_named = ("UI_PASSWORD", "CLI_TOKEN", "ANTHROPIC_API_KEY", "client_secret")
@@ -172,7 +171,6 @@ class TestLoginCannotLeakViaUrl:
 
     def test_login_form_posts(self):
         import os
-        here = os.path.dirname(os.path.abspath(__file__))
-        with open(os.path.join(here, 'server.py')) as f:
+        with open(SERVER_PY) as f:
             source = f.read()
         assert 'method="POST" action="/login"' in source
