@@ -26,25 +26,85 @@ A natural language DJ assistant that controls Spotify playback on Sonos speakers
 
 ## Architecture
 
+Two processes, layered rather than competing. **`server.py` is policy** — auth,
+the web UI, the routine scheduler, natural language, and anything that needs a
+Spotify *account*. **`node-sonos-http-api` is a device driver** — it speaks
+UPnP/SOAP to the speakers so nothing else has to.
+
+```mermaid
+flowchart LR
+    BROWSER["Browser / phone"]
+    CLI["dj CLI"]
+    CF["cloudflare-tunnel"]
+    SRV["server.py :5006<br/>auth · web UI · scheduler<br/>watchdog · chat"]
+    NODE["node-sonos-http-api :5005<br/>UPnP / SOAP"]
+    SPEAK["Sonos speakers :1400"]
+    SPOT["Spotify Web API"]
+    ANTH["Anthropic API"]
+
+    BROWSER --> CF
+    CF --> SRV
+    CLI --> SRV
+    SRV -->|"play · pause · volume"| NODE
+    NODE --> SPEAK
+    SRV -->|"search · playlists · URIs"| SPOT
+    SRV -->|"/chat"| ANTH
+    SPEAK -->|"streams the audio"| SPOT
+    NODE -.->|"webhook on change"| SRV
+    SRV -.->|"server-sent events"| BROWSER
+
+    classDef appC fill:#d7edef,stroke:#12707a,color:#0c343a
+    classDef devC fill:#f4e3cb,stroke:#92560f,color:#4a2c07
+    classDef cloudC fill:#dedff2,stroke:#474d8a,color:#252850
+    classDef edgeC fill:#e8eaed,stroke:#6b7480,color:#2b3138
+    classDef spkC fill:#ffffff,stroke:#171a1f,color:#171a1f
+    class SRV appC
+    class NODE devC
+    class SPOT,ANTH cloudC
+    class BROWSER,CF,CLI edgeC
+    class SPEAK spkC
 ```
-Internet (url hidden)
-            ↓
-    Cloudflare Tunnel
-            ↓
-┌─────────────────────────────────────┐
-│      Host (macOS, via launchd)      │
-├─────────────────────────────────────┤
-│  server.py (port 5006)              │
-│  ├── Web UI (/ui)                   │
-│  ├── Chat endpoint (/chat)          │
-│  ├── Claude AI integration          │
-│  └── Spotify API                    │
-│            ↓                        │
-│  node-sonos-http-api (port 5005)    │
-│            ↓                        │
-│      Sonos Speakers                 │
-└─────────────────────────────────────┘
+
+Inside `server.py` two background loops run on CherryPy `Monitor` plugins: the
+**scheduler** ticks every 20s and fires any routine step that is due, and the
+**watchdog** ticks every 60s and checks that Sonos is not just answering but
+actually has speakers discovered. Persistent state is three JSON files —
+`schedules.json`, `stations.json` and `config.json`.
+
+Three things in that picture are easy to get wrong:
+
+**The audio never touches either process.** The speaker streams from Spotify
+directly. That is why playback keeps going while you restart the server, and
+why tracks played this way do not appear in your Spotify listening history.
+
+**Playback is never done directly.** Every play, pause and volume call goes out
+to node-sonos-http-api. If it is not running, this server returns 502 rather
+than pretending. macOS grants Local Network access per process and the
+launchd-run Python server does not have it, so direct UPnP calls from Python
+fail with "no route to host" — which is also why the custom actions in
+`sonos-actions/` live on the Node side.
+
+**The browser is told, not asked.** The UI used to poll `/nowplaying` every ten
+seconds, which was roughly 90% of all traffic and still left it up to ten
+seconds stale. Sonos now posts to `/sonos_event` when something actually
+changes and the server relays it over server-sent events:
+
+```mermaid
+sequenceDiagram
+    participant P as Sonos speaker
+    participant N as node-sonos-http-api
+    participant S as server.py
+    participant B as Browser
+
+    P->>N: UPnP event
+    N->>S: POST /sonos_event (X-DJ-Token)
+    S->>N: GET /state
+    S--)B: data: {...} over SSE
+    Note over B: painted immediately
 ```
+
+Polling remains as a fallback and is dropped as soon as the stream opens, so a
+browser that cannot hold an EventSource still works — just less promptly.
 
 ## Web UI
 
@@ -105,7 +165,10 @@ dj help
 
 | Endpoint | Description |
 |----------|-------------|
-| `/health` | Sonos + Spotify reachability; 503 if either is down |
+| `/health` | Sonos + Spotify reachability; 503 if either is down. Sonos counts as healthy only if it reports discovered speakers, not merely a 200 |
+| `/metrics` | Counters since process start: call volume, failures, transport and content latency, schedule fires, stream clients. Makes no upstream call |
+| `/stream` | Server-sent events; pushes the now-playing payload whenever Sonos changes something |
+| `/sonos_event` | Where node-sonos-http-api posts its change notifications (POST). Authenticated with the same `X-DJ-Token` |
 | `/schedules` | List scheduled actions |
 | `/schedule_save` | Create or replace a whole routine, steps included (POST, JSON body) |
 | `/schedule_delete` | Remove by id (POST) |
@@ -202,14 +265,16 @@ cd node-sonos-http-api
 npm install
 ```
 
-Then add this project's queue-editing actions, which upstream does not ship:
+Then add this project's custom actions, which upstream does not ship:
 
 ```bash
 cp ~/spotify-server/sonos-actions/*.js ~/node-sonos-http-api/lib/actions/
 ```
 
 They register `queuemove` and `queueremove`, which the web UI's drag-and-drop
-needs. They live in node-sonos-http-api rather than in `server.py` because
+needs, and `relvolume`, which asks the speaker to apply a relative volume
+change and report where it landed rather than resolving it against a cached
+value. They live in node-sonos-http-api rather than in `server.py` because
 **macOS grants Local Network access per process**: the launchd-run Python
 server cannot open a connection to the speaker at all (UPnP calls fail with
 "no route to host"), while node-sonos-http-api, which talks to it constantly,
@@ -218,6 +283,23 @@ once deployed — a difference worth knowing before reaching for it.
 
 Re-run the copy after updating node-sonos-http-api; `lib/actions/` is inside
 that clone, so a fresh checkout drops them.
+
+Finally, point it at this server so the UI can be pushed changes instead of
+polling for them. Create `settings.json` in the node-sonos-http-api clone —
+the keys merge onto its defaults, so nothing else is affected:
+
+```json
+{
+    "webhook": "http://localhost:5006/sonos_event",
+    "webhookHeaderName": "X-DJ-Token",
+    "webhookHeaderContents": "THE_SAME_cli_token_FROM_config.json"
+}
+```
+
+This file holds a credential, so `chmod 600 settings.json`. It is also the one
+piece of setup that lives outside this repo: **rebuild that clone and the web
+UI silently falls back to polling** until you recreate it. Nothing breaks, it
+just goes back to being up to ten seconds stale.
 
 ### 3. Clone this repo
 
@@ -238,14 +320,34 @@ nano config.json
 {
     "client_id": "YOUR_SPOTIFY_CLIENT_ID",
     "client_secret": "YOUR_SPOTIFY_CLIENT_SECRET",
-    "sonos_room": "Dining%20Room",
-    "anthropic_api_key": "YOUR_ANTHROPIC_API_KEY"
+    "sonos_room": "Dining Room",
+    "anthropic_api_key": "YOUR_ANTHROPIC_API_KEY",
+    "ui_password": "PICK_SOMETHING",
+    "cli_token": "GENERATE_ONE_SEE_BELOW"
 }
 ```
 
 - Get Spotify credentials at https://developer.spotify.com/dashboard
 - Get Anthropic API key at https://console.anthropic.com
-- Find your Sonos room name: `curl http://localhost:5005/zones`
+- Find your Sonos room name: `curl http://localhost:5005/zones`.
+  Spaces are fine — the room is percent-encoded for you, and an already-encoded
+  `Dining%20Room` is accepted too
+- Generate the CLI token:
+  `python3 -c 'import secrets; print(secrets.token_hex(32))'`
+
+**`ui_password` and `cli_token` are required, and the server refuses to start
+without them.** This is deliberate: the service is reachable from the internet
+through the tunnel, so forgetting a key and deciding to run unauthenticated
+must not produce the same result. If you really do want no authentication —
+on a trusted LAN with no tunnel, say — ask for it explicitly:
+
+```json
+{ "allow_open_access": true }
+```
+
+Everything else is optional. Without `anthropic_api_key` the `/chat` endpoint
+is disabled and the rest of the server runs normally. Any other tunable can be
+overridden here too; the defaults live in the `DEFAULTS` dict in `server.py`.
 
 ### 5. Authenticate with Spotify
 
