@@ -74,8 +74,14 @@ actually has speakers discovered. Persistent state is three JSON files —
 Three things in that picture are easy to get wrong:
 
 **The audio never touches either process.** The speaker streams from Spotify
-directly. That is why playback keeps going while you restart the server, and
-why tracks played this way do not appear in your Spotify listening history.
+directly, which is why playback carries on while you restart the server.
+
+It does still land in your Spotify listening history, though — the speaker
+streams through the Spotify account linked in the Sonos app (the `sid=12`
+and `sn=2` in every `x-sonos-spotify:` URI), and that integration reports
+plays. What this server's own OAuth token does *not* do is control or report
+playback: it holds no Connect scopes and is used only for search, playlist
+lookup and turning a search result into a URI.
 
 **Playback is never done directly.** Every play, pause and volume call goes out
 to node-sonos-http-api. If it is not running, this server returns 502 rather
