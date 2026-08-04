@@ -258,6 +258,23 @@ The suite needs no network, credentials or Sonos.
 
 ### 2. Install node-sonos-http-api
 
+The bridge is a separate upstream project, so it is not vendored here. Once
+you have cloned this repo and written `config.json` (steps 3 and 4), one
+command does the whole Sonos side — clone, install, copy this project's custom
+actions in, and point its webhook back at the server:
+
+```bash
+scripts/setup-sonos.sh                       # ~/Projects/node-sonos-http-api
+scripts/setup-sonos.sh /path/to/somewhere    # or wherever you keep it
+```
+
+It is safe to re-run, and worth re-running after updating node-sonos-http-api:
+`lib/actions/` lives inside that clone, so a fresh checkout drops the custom
+actions. Existing keys in its `settings.json` are preserved.
+
+The rest of this section is what the script does, for anyone doing it by hand
+or debugging it.
+
 ```bash
 cd ~
 git clone https://github.com/jishi/node-sonos-http-api.git
