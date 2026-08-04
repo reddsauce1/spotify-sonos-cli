@@ -391,14 +391,14 @@ class TestChipsOnMobile:
 
     def test_chips_are_not_hidden_by_default(self, markup):
         css = markup.split("<style>", 1)[1].split("</style>", 1)[0]
-        rule = re.search(r"\.chips\s*\{([^}]*)\}", css).group(1)
+        rule = re.search(r"(?m)^\s*\.chips\s*\{([^}]*)\}", css).group(1)
         assert "display: none" not in rule
 
     def test_chips_lie_side_by_side_on_narrow_screens(self, markup):
         """Stacked, they would add two rows to a player that is already three
         deep on a phone."""
         css = markup.split("<style>", 1)[1].split("</style>", 1)[0]
-        base = re.search(r"\.chips\s*\{([^}]*)\}", css).group(1)
+        base = re.search(r"(?m)^\s*\.chips\s*\{([^}]*)\}", css).group(1)
         assert "flex-direction: row" in base
 
     def test_chips_stack_again_in_the_sidebar(self, markup):

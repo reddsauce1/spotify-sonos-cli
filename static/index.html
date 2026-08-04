@@ -115,13 +115,22 @@
     padding: 8px 12px calc(8px + env(safe-area-inset-bottom));
     display: flex; flex-direction: column; gap: 7px; min-width: 0;
   }
-  .player-main { display: flex; align-items: center; gap: 12px; min-width: 0; }
+  /* Phone: art + title + the four transport buttons already fill the width, and
+     .transport does not shrink — so the volume row and the chips were being
+     pushed off the right edge. Wrap, and give each of them a row of its own. */
+  .player-main {
+    display: flex; flex-wrap: wrap; align-items: center;
+    gap: 8px 12px; min-width: 0;
+  }
+  .player-main > .vol, .player-main > .chips { flex: 1 0 100%; }
   @media (min-width: 760px) {
     .player {
       border-top: 0; border-right: 1px solid var(--line);
       gap: 14px; padding: 18px 16px; overflow-y: auto;
     }
     .player-main { flex-direction: column; align-items: stretch; gap: 14px; }
+    /* In column mode a 100% basis would mean full *height*, not full width. */
+    .player-main > .vol, .player-main > .chips { flex: none; }
   }
 
   /* Seek */

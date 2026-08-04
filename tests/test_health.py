@@ -10,8 +10,14 @@ import requests
 from spotipy.exceptions import SpotifyException
 
 
-def _sonos_ok(status_code=200):
-    return MagicMock(status_code=status_code)
+def _sonos_ok(status_code=200, zones=None):
+    """A /zones response. The default carries one real-shaped zone, because a
+    200 with an empty list is a distinct failure the endpoint has to catch."""
+    response = MagicMock(status_code=status_code)
+    response.json.return_value = (
+        [{"coordinator": {"roomName": "Dining Room"}}] if zones is None else zones
+    )
+    return response
 
 
 class TestAllHealthy:
@@ -124,3 +130,55 @@ class TestNotPublic:
         """Wrapping it would turn a Spotify outage into a 502 with no body,
         defeating the endpoint."""
         assert getattr(server_mod.DJServer.health, "__wrapped__", None) is None
+
+
+class TestSonosUpButNotReady:
+    """node-sonos-http-api answers before SSDP discovery has found anything,
+    so a 200 is not the same as a working system."""
+
+    def test_an_empty_zone_list_is_not_healthy(self, dj, server_mod):
+        resp = server_mod.cherrypy.response
+        with patch.object(server_mod.requests, "get", return_value=_sonos_ok(zones=[])):
+            with patch.object(server_mod, "sp"):
+                result = dj.health()
+        assert result["sonos"] == "error: no zones discovered"
+        assert resp.status == 503
+
+    def test_an_unparseable_body_is_not_healthy(self, dj, server_mod):
+        response = MagicMock(status_code=200)
+        response.json.side_effect = ValueError("not json")
+        with patch.object(server_mod.requests, "get", return_value=response):
+            with patch.object(server_mod, "sp"):
+                result = dj.health()
+        assert result["sonos"] == "error: unparseable zone list"
+
+
+class TestScheduleFailuresAreVisible:
+    """A routine that quietly did nothing should be findable without reading
+    the log."""
+
+    def _health(self, dj, server_mod):
+        with patch.object(server_mod.requests, "get", return_value=_sonos_ok()):
+            with patch.object(server_mod, "sp"):
+                return dj.health()
+
+    def test_zero_when_everything_ran(self, dj, server_mod):
+        server_mod._schedules.append(
+            {"id": "s", "steps": [{"action": "pause", "last_fired": "2026-08-04"}]})
+        assert self._health(dj, server_mod)["schedule_steps_failed"] == 0
+
+    def test_counts_steps_that_failed(self, dj, server_mod):
+        server_mod._schedules.append({"id": "s", "steps": [
+            {"action": "pause", "last_error": {"message": "timed out"}},
+            {"action": "play", "last_fired": "2026-08-04"},
+        ]})
+        assert self._health(dj, server_mod)["schedule_steps_failed"] == 1
+
+    def test_a_failed_routine_does_not_turn_health_red(self, dj, server_mod):
+        """Reachability is what 503 means. A stale failure from last week must
+        not keep the endpoint alarming forever."""
+        resp = server_mod.cherrypy.response
+        server_mod._schedules.append(
+            {"id": "s", "steps": [{"action": "pause", "last_error": {"message": "x"}}]})
+        self._health(dj, server_mod)
+        assert resp.status != 503

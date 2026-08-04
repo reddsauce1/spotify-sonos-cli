@@ -83,6 +83,14 @@ DEFAULTS = {
     # empty queue. /queue/{limit} answers in milliseconds.
     "queue_display_limit": 50,
     "sonos_timeout": 5,
+    # Loading a playlist or album is not like pause/volume: Sonos expands the
+    # whole container before it answers, so the wait scales with the track
+    # count. A 51-track playlist returns in well under a second, but the
+    # 8,864-track "DW Archive" takes ~46s. At sonos_timeout it 502'd every
+    # time -- and the add still landed a minute later, so each retry silently
+    # queued another 8,864 tracks (the queue was found at 8,950).
+    # Only spotify/now, spotify/queue and spotify/next get this longer budget.
+    "sonos_content_timeout": 90,
     "cookie_max_age": 86400 * 7,
     # Login sessions are held in memory; the cap stops a long-running server
     # accumulating tokens indefinitely.
@@ -93,6 +101,15 @@ DEFAULTS = {
     # Scheduler tick. Must be under 60s or a schedule whose minute falls
     # between two ticks is skipped entirely.
     "schedule_tick_seconds": 20,
+    # A step used to be stamped fired before the Sonos call ran, so a single
+    # failure burned it for the whole day -- a wake-up that silently did
+    # nothing. Now the attempt is stamped and the success is committed
+    # separately, and a step that failed is retried while it is still inside
+    # this window past its fire time. The window has to exceed the trigger
+    # minute or a retry could never be claimed: matching is on HH:MM, and by
+    # the time a failed call returns that minute is often gone.
+    "schedule_max_attempts": 3,
+    "schedule_retry_window_seconds": 300,
     "max_schedules": 50,
     "max_steps_per_schedule": 20,
     "max_stations": 50,
@@ -157,7 +174,15 @@ sp = spotipy.Spotify(auth_manager=SpotifyOAuth(
 ))
 
 # Sonos setup
-SONOS_ROOM = config.get('sonos_room', 'Dining%20Room')
+#
+# The room goes straight into a URL path, so it has to be percent-encoded --
+# "Living Room" with a real space builds a malformed request. Encoding it
+# blindly is not safe either: existing configs already store the encoded form
+# ("Dining%20Room"), and quoting that again yields "Dining%2520Room" and a 404
+# on every call. Unquoting first makes both spellings land on the same URL.
+SONOS_ROOM = urllib.parse.quote(
+    urllib.parse.unquote(config.get('sonos_room', 'Dining Room')), safe=''
+)
 # /zones and other API-wide endpoints are not room-scoped, so keep the base
 # separate from the room-prefixed URL the playback helpers use.
 SONOS_BASE_URL = "http://localhost:5005"
@@ -173,6 +198,7 @@ UI_INDEX_PATH = os.path.join(STATIC_DIR, 'index.html')
 
 QUEUE_DISPLAY_LIMIT = _setting('queue_display_limit')
 SONOS_TIMEOUT = _setting('sonos_timeout')
+SONOS_CONTENT_TIMEOUT = _setting('sonos_content_timeout')
 
 # Claude setup
 ANTHROPIC_API_KEY = config.get('anthropic_api_key', '')
@@ -279,6 +305,13 @@ def _expire_search_results_locked():
 SCHEDULES_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'schedules.json')
 
 SCHEDULE_TICK_SECONDS = _setting('schedule_tick_seconds')
+SCHEDULE_MAX_ATTEMPTS = _setting('schedule_max_attempts')
+SCHEDULE_RETRY_WINDOW_SECONDS = _setting('schedule_retry_window_seconds')
+
+# (entry id, step index) for every step a tick is currently firing. Claiming is
+# minute-based and a Sonos call can outlast several ticks, so without this the
+# retry path would start a second copy of a step that is still running.
+_steps_in_flight = set()
 MAX_SCHEDULES = _setting('max_schedules')
 MAX_STEPS = _setting('max_steps_per_schedule')
 MAX_OFFSET_MINUTES = _setting('max_step_offset_minutes')
@@ -460,16 +493,55 @@ def _annotate_schedule(entry, now=None):
     return result
 
 
+def _retry_is_open(step, fire_at, day_shift, now_dt):
+    """True if `step` failed earlier and is still inside its retry window.
+
+    Claiming is minute-exact, so a step whose call failed slowly -- a content
+    load can run to sonos_content_timeout -- would never see its own HH:MM
+    again and could not be retried at all. This reopens the claim for a bounded
+    period after the fire time instead.
+    """
+    attempted = step.get('last_attempt')
+    if not attempted:
+        return False
+    if step.get('last_fired') == attempted:
+        return False
+    if step.get('attempts', 0) >= SCHEDULE_MAX_ATTEMPTS:
+        return False
+
+    try:
+        trigger_date = datetime.date.fromisoformat(attempted)
+        hour, minute = (int(part) for part in fire_at.split(':'))
+    except ValueError:
+        # A hand-edited schedules.json can carry a malformed stamp. Log it and
+        # leave the step alone rather than retrying on a date we cannot read.
+        log.warning("Schedule step has unreadable last_attempt %r", attempted)
+        return False
+
+    fired_on = trigger_date + datetime.timedelta(days=day_shift)
+    fire_dt = datetime.datetime.combine(fired_on, datetime.time(hour, minute))
+    elapsed = (now_dt - fire_dt).total_seconds()
+    return 0 <= elapsed <= SCHEDULE_RETRY_WINDOW_SECONDS
+
+
 def _due_steps(now=None):
-    """Claim every step due right now, stamping each under the lock.
+    """Claim every step due right now, stamping the attempt under the lock.
 
     Stamping before running matters: a Sonos call takes seconds and the tick
     is shorter than a minute, so an unclaimed step would fire on every tick
     until the minute passed.
+
+    What is stamped here is the *attempt*, not the success. `last_fired` is
+    committed by _record_step_outcome only once the call comes back clean, so
+    a step whose Sonos call failed can be claimed again inside its retry
+    window rather than being burned for the day. `_steps_in_flight` is what
+    stops that retry path from double-firing a step that is merely slow.
     """
     now = now or time.localtime()
     hhmm = f"{now.tm_hour:02d}:{now.tm_min:02d}"
     today = datetime.date(now.tm_year, now.tm_mon, now.tm_mday)
+    now_dt = datetime.datetime(now.tm_year, now.tm_mon, now.tm_mday,
+                               now.tm_hour, now.tm_min, now.tm_sec)
 
     claimed = []
     with _schedules_lock:
@@ -480,31 +552,92 @@ def _due_steps(now=None):
             if not TIME_RE.match(trigger):
                 continue
 
-            for step in entry.get('steps', []):
+            for index, step in enumerate(entry.get('steps', [])):
                 fire_at, day_shift = _step_fire_time(trigger, step.get('offset', 0))
-                if fire_at != hhmm:
+
+                if fire_at == hhmm:
+                    # A step that wrapped past midnight belongs to the previous
+                    # day's run, so both the weekday filter and the fired-stamp
+                    # key off the trigger date rather than today's.
+                    trigger_date = today - datetime.timedelta(days=day_shift)
+                    days = entry.get('days') or list(range(7))
+                    if trigger_date.weekday() not in days:
+                        continue
+                    if step.get('last_fired') == trigger_date.isoformat():
+                        continue
+                    if (step.get('last_attempt') == trigger_date.isoformat()
+                            and step.get('attempts', 0) >= SCHEDULE_MAX_ATTEMPTS):
+                        continue
+                elif _retry_is_open(step, fire_at, day_shift, now_dt):
+                    trigger_date = datetime.date.fromisoformat(step['last_attempt'])
+                else:
                     continue
 
-                # A step that wrapped past midnight belongs to the previous
-                # day's run, so both the weekday filter and the fired-stamp
-                # key off the trigger date rather than today's.
-                trigger_date = today - datetime.timedelta(days=day_shift)
-                days = entry.get('days') or list(range(7))
-                if trigger_date.weekday() not in days:
-                    continue
-                if step.get('last_fired') == trigger_date.isoformat():
+                key = (entry.get('id'), index)
+                if key in _steps_in_flight:
                     continue
 
-                step['last_fired'] = trigger_date.isoformat()
-                claimed.append({**step, 'label': entry.get('label') or entry.get('id')})
+                stamp = trigger_date.isoformat()
+                step['attempts'] = (
+                    step.get('attempts', 0) + 1 if step.get('last_attempt') == stamp else 1
+                )
+                step['last_attempt'] = stamp
+                _steps_in_flight.add(key)
+                claimed.append({
+                    **step,
+                    'label': entry.get('label') or entry.get('id'),
+                    '_entry_id': entry.get('id'),
+                    '_step_index': index,
+                    '_trigger_date': stamp,
+                })
 
         if claimed:
             _save_schedules_locked()
     return claimed
 
 
+def _record_step_outcome(claimed, ok, error):
+    """Commit the result of one fired step and release its in-flight claim.
+
+    Success writes `last_fired`, which is what stops the step being claimed
+    again for that trigger date. Failure leaves it unset so the retry window
+    can pick it up, and records `last_error` so a routine that quietly did
+    nothing is visible in /schedules instead of only in the log.
+    """
+    key = (claimed.get('_entry_id'), claimed.get('_step_index'))
+    stamp = claimed.get('_trigger_date')
+
+    with _schedules_lock:
+        _steps_in_flight.discard(key)
+
+        entry = next((e for e in _schedules if e.get('id') == key[0]), None)
+        if entry is None:
+            return
+        steps = entry.get('steps', [])
+        if not 0 <= key[1] < len(steps):
+            # The routine was edited while this step was in flight.
+            return
+        step = steps[key[1]]
+
+        if ok:
+            step['last_fired'] = stamp
+            step.pop('last_error', None)
+        else:
+            step['last_error'] = {
+                'date': stamp,
+                'message': error,
+                'attempts': step.get('attempts', 0),
+                'final': step.get('attempts', 0) >= SCHEDULE_MAX_ATTEMPTS,
+            }
+        _save_schedules_locked()
+
+
 def _fire_schedule(dj, entry):
-    """Run one step. Never raises -- one bad step must not stop the rest."""
+    """Run one step. Never raises -- one bad step must not stop the rest.
+
+    Returns (ok, error) so the caller can commit or retry. Still never raises:
+    the outcome is reported, not thrown.
+    """
     action = entry.get('action')
     label = entry.get('label') or action
     try:
@@ -527,16 +660,20 @@ def _fire_schedule(dj, entry):
         elif action == 'clearqueue':
             result = dj._do_clearqueue()
         else:
+            # Not retryable -- the routine itself is wrong, so report it as a
+            # final failure rather than letting the window re-run it.
             log.error("Schedule %r has unknown action %r", label, action)
-            return
+            return False, f"unknown action {action!r}"
     except Exception as exc:
         log.error("Schedule %r raised %s: %s", label, type(exc).__name__, exc)
-        return
+        return False, f"{type(exc).__name__}: {exc}"
 
     if isinstance(result, dict) and 'error' in result:
         log.error("Schedule %r failed: %s", label, result['error'])
-    else:
-        log.info("Schedule %r ran %s", label, action)
+        return False, result['error']
+
+    log.info("Schedule %r ran %s", label, action)
+    return True, None
 
 
 def run_due_schedules(dj):
@@ -544,7 +681,14 @@ def run_due_schedules(dj):
     thread and silently stop every future routine."""
     try:
         for step in _due_steps():
-            _fire_schedule(dj, step)
+            # finally, not just the happy path: an unreleased in-flight claim
+            # blocks that step forever, which is the silent failure this whole
+            # change exists to remove.
+            ok, error = False, "tick aborted before the step reported"
+            try:
+                ok, error = _fire_schedule(dj, step)
+            finally:
+                _record_step_outcome(step, ok, error)
     except Exception as exc:
         log.error("Scheduler tick failed: %s: %s", type(exc).__name__, exc)
 
@@ -992,7 +1136,14 @@ User: "thanks!"
         log.warning("Claude returned no text (stop_reason=%s)", response.stop_reason)
         return {"action": "chat", "message": "Sorry, I had trouble understanding that. Try again!"}
 
-    return json.loads(text)
+    try:
+        return json.loads(text)
+    except ValueError:
+        # output_config pins a json_schema, so this should not happen -- but it
+        # is the one parse in this function that could still 500 the request,
+        # and every other failure above degrades to a spoken reply instead.
+        log.error("Claude returned unparseable JSON (stop_reason=%s)", response.stop_reason)
+        return {"action": "chat", "message": "Sorry, I had trouble understanding that. Try again!"}
 
 
 class DJServer:
@@ -1152,10 +1303,18 @@ class DJServer:
 
         try:
             response = requests.get(f"{SONOS_BASE_URL}/zones", timeout=3)
-            checks["sonos"] = (
-                "ok" if response.status_code == 200
-                else f"error: HTTP {response.status_code}"
-            )
+            if response.status_code != 200:
+                checks["sonos"] = f"error: HTTP {response.status_code}"
+            else:
+                # A 200 is not the same as a working system. node-sonos-http-api
+                # answers before SSDP discovery has found anything, and an empty
+                # zone list means every playback call is about to fail.
+                try:
+                    zones = response.json()
+                except ValueError:
+                    checks["sonos"] = "error: unparseable zone list"
+                else:
+                    checks["sonos"] = "ok" if zones else "error: no zones discovered"
         except requests.exceptions.RequestException as exc:
             # Class name only -- the full message can carry internal hostnames.
             checks["sonos"] = f"error: {exc.__class__.__name__}"
@@ -1169,6 +1328,16 @@ class DJServer:
             checks["spotify"] = f"error: {exc.__class__.__name__}"
 
         checks["uptime_seconds"] = round(time.monotonic() - SERVER_START)
+
+        # A routine that failed is not a reachability problem, so it is
+        # reported but deliberately does not turn the check red -- otherwise a
+        # stale error from last week would keep the endpoint alarming forever.
+        with _schedules_lock:
+            checks["schedule_steps_failed"] = sum(
+                1 for entry in _schedules
+                for step in entry.get('steps', [])
+                if step.get('last_error')
+            )
 
         # 503 so a monitor can alert on the status code alone.
         if checks["sonos"] != "ok" or checks["spotify"] != "ok":
@@ -1653,14 +1822,19 @@ class DJServer:
 
     def _do_play(self, num=None, uri=None, session_id='global'):
         if uri:
-            result = self._sonos_request(f"spotify/now/{_validate_uri(uri)}")
+            result = self._sonos_request(
+                f"spotify/now/{_validate_uri(uri)}", timeout=SONOS_CONTENT_TIMEOUT
+            )
             if "error" in result:
                 return result
             return {"status": "playing", "uri": uri}
 
         if num:
             item = self._get_result_item(num, session_id)
-            result = self._sonos_request(f"spotify/now/{_validate_uri(item['uri'])}")
+            result = self._sonos_request(
+                f"spotify/now/{_validate_uri(item['uri'])}",
+                timeout=SONOS_CONTENT_TIMEOUT,
+            )
             if "error" in result:
                 return result
             return {"status": "playing", "item": item}
@@ -1669,14 +1843,19 @@ class DJServer:
 
     def _do_queue(self, num=None, uri=None, session_id='global'):
         if uri:
-            result = self._sonos_request(f"spotify/queue/{_validate_uri(uri)}")
+            result = self._sonos_request(
+                f"spotify/queue/{_validate_uri(uri)}", timeout=SONOS_CONTENT_TIMEOUT
+            )
             if "error" in result:
                 return result
             return {"status": "queued", "uri": uri}
 
         if num:
             item = self._get_result_item(num, session_id)
-            result = self._sonos_request(f"spotify/queue/{_validate_uri(item['uri'])}")
+            result = self._sonos_request(
+                f"spotify/queue/{_validate_uri(item['uri'])}",
+                timeout=SONOS_CONTENT_TIMEOUT,
+            )
             if "error" in result:
                 return result
             return {"status": "queued", "item": item}
@@ -1685,14 +1864,19 @@ class DJServer:
 
     def _do_next(self, num=None, uri=None, session_id='global'):
         if uri:
-            result = self._sonos_request(f"spotify/next/{_validate_uri(uri)}")
+            result = self._sonos_request(
+                f"spotify/next/{_validate_uri(uri)}", timeout=SONOS_CONTENT_TIMEOUT
+            )
             if "error" in result:
                 return result
             return {"status": "playing next", "uri": uri}
 
         if num:
             item = self._get_result_item(num, session_id)
-            result = self._sonos_request(f"spotify/next/{_validate_uri(item['uri'])}")
+            result = self._sonos_request(
+                f"spotify/next/{_validate_uri(item['uri'])}",
+                timeout=SONOS_CONTENT_TIMEOUT,
+            )
             if "error" in result:
                 return result
             return {"status": "playing next", "item": item}

@@ -93,6 +93,10 @@ def _never_touch_real_data(monkeypatch, tmp_path):
                         str(tmp_path / "stations.json"))
     monkeypatch.setattr(server_module, "_schedules", [])
     monkeypatch.setattr(server_module, "_stations", [])
+    # In-flight claims key off (entry id, step index), and the helpers default
+    # to id "sch_test" -- so without this a claim left by one test blocks the
+    # identically-named step in the next one.
+    monkeypatch.setattr(server_module, "_steps_in_flight", set())
     yield
 
 

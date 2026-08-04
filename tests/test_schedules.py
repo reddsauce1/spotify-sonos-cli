@@ -59,6 +59,19 @@ def _add(server_mod, **kw):
     return entry
 
 
+def _complete(server_mod, claimed, ok=True, error=None):
+    """Report claimed steps as finished, the way run_due_schedules does.
+
+    _due_steps only stamps the attempt now; success is committed separately
+    and the in-flight claim released. A test that claims without reporting
+    leaves the step looking like it is still running, which is exactly what
+    blocks a second claim.
+    """
+    for step in claimed:
+        server_mod._record_step_outcome(step, ok, error)
+    return claimed
+
+
 class TestDueDetection:
     def test_fires_at_its_minute(self, server_mod):
         _add(server_mod, time="07:00")
@@ -84,7 +97,7 @@ class TestDueDetection:
 
     def test_fires_again_the_next_day(self, server_mod):
         _add(server_mod, time="07:00")
-        assert len(server_mod._due_steps(_tm(7, 0))) == 1
+        _complete(server_mod, server_mod._due_steps(_tm(7, 0)))
         assert len(server_mod._due_steps(_tm(7, 0, days_later=1))) == 1
 
     def test_disabled_never_fires(self, server_mod):
@@ -96,8 +109,9 @@ class TestDays:
     def test_empty_days_means_every_day(self, server_mod):
         _add(server_mod, time="07:00", days=[])
         for wday in range(7):
-            server_mod._schedules[0]["steps"][0]["last_fired"] = None
-            assert len(server_mod._due_steps(_tm(7, 0, wday=wday))) == 1
+            due = server_mod._due_steps(_tm(7, 0, wday=wday))
+            assert len(due) == 1
+            _complete(server_mod, due)
 
     def test_weekdays_only_skips_the_weekend(self, server_mod):
         _add(server_mod, time="07:00", days=[0, 1, 2, 3, 4])
@@ -367,7 +381,8 @@ class TestMultiStepRoutines:
 
     def test_whole_routine_repeats_the_next_day(self, server_mod):
         self._routine(server_mod)
-        assert len(server_mod._due_steps(_tm(7, 0))) == 2
+        first = _complete(server_mod, server_mod._due_steps(_tm(7, 0)))
+        assert len(first) == 2
         assert len(server_mod._due_steps(_tm(7, 0, days_later=1))) == 2
 
     def test_label_travels_with_every_step(self, server_mod):
@@ -484,3 +499,83 @@ class TestMigrationFromFlatFormat:
             json.dump([{**self.OLD, "time": "07:00", "last_fired": None}], f)
         server_mod._schedules[:] = server_mod._load_schedules()
         assert len(server_mod._due_steps(_tm(7, 0))) == 1
+
+
+class TestFailedStepsRetry:
+    """A step used to be stamped fired before its Sonos call ran, so one
+    failure burned it for the day -- a wake-up that silently did nothing.
+    The attempt and the success are now committed separately."""
+
+    def _fail(self, server_mod, claimed):
+        return _complete(server_mod, claimed, ok=False, error="Sonos request timed out")
+
+    def test_a_failed_step_is_not_marked_fired(self, server_mod):
+        _add(server_mod, time="07:00")
+        self._fail(server_mod, server_mod._due_steps(_tm(7, 0)))
+        assert server_mod._schedules[0]["steps"][0].get("last_fired") is None
+
+    def test_a_failed_step_is_retried_inside_the_window(self, server_mod):
+        _add(server_mod, time="07:00")
+        self._fail(server_mod, server_mod._due_steps(_tm(7, 0)))
+        # 07:02 no longer matches the trigger minute, so only the retry path
+        # can produce this claim.
+        assert len(server_mod._due_steps(_tm(7, 2))) == 1
+
+    def test_a_succeeded_step_is_not_retried(self, server_mod):
+        _add(server_mod, time="07:00")
+        _complete(server_mod, server_mod._due_steps(_tm(7, 0)))
+        assert server_mod._due_steps(_tm(7, 2)) == []
+
+    def test_retries_stop_at_the_attempt_cap(self, server_mod):
+        _add(server_mod, time="07:00")
+        claims = 0
+        for minute in range(0, 5):
+            due = server_mod._due_steps(_tm(7, minute))
+            claims += len(due)
+            self._fail(server_mod, due)
+        assert claims == server_mod.SCHEDULE_MAX_ATTEMPTS
+
+    def test_the_window_closes(self, server_mod):
+        _add(server_mod, time="07:00")
+        self._fail(server_mod, server_mod._due_steps(_tm(7, 0)))
+        beyond = server_mod.SCHEDULE_RETRY_WINDOW_SECONDS // 60 + 1
+        assert server_mod._due_steps(_tm(7, beyond)) == []
+
+    def test_a_retry_that_succeeds_stamps_fired(self, server_mod):
+        _add(server_mod, time="07:00")
+        self._fail(server_mod, server_mod._due_steps(_tm(7, 0)))
+        _complete(server_mod, server_mod._due_steps(_tm(7, 2)))
+        step = server_mod._schedules[0]["steps"][0]
+        assert step["last_fired"] is not None
+        assert "last_error" not in step
+
+    def test_an_in_flight_step_is_not_claimed_again(self, server_mod):
+        _add(server_mod, time="07:00")
+        assert len(server_mod._due_steps(_tm(7, 0))) == 1   # claimed, never reported
+        assert server_mod._due_steps(_tm(7, 0)) == []
+        assert server_mod._due_steps(_tm(7, 2)) == []
+
+    def test_the_failure_is_recorded_for_the_ui(self, server_mod):
+        _add(server_mod, time="07:00")
+        self._fail(server_mod, server_mod._due_steps(_tm(7, 0)))
+        error = server_mod._schedules[0]["steps"][0]["last_error"]
+        assert error["message"] == "Sonos request timed out"
+        assert error["attempts"] == 1
+        assert error["final"] is False
+
+    def test_the_last_failure_is_marked_final(self, server_mod):
+        _add(server_mod, time="07:00")
+        for minute in range(0, 5):
+            self._fail(server_mod, server_mod._due_steps(_tm(7, minute)))
+        error = server_mod._schedules[0]["steps"][0]["last_error"]
+        assert error["attempts"] == server_mod.SCHEDULE_MAX_ATTEMPTS
+        assert error["final"] is True
+
+    def test_a_wrapped_step_retries_against_its_own_trigger_date(self, server_mod):
+        """The step lands after midnight but belongs to the previous day's
+        run, so the retry window has to measure from the landing time."""
+        _add(server_mod, time="23:50", steps=[
+            {"offset": 20, "action": "pause", "last_fired": None},
+        ])
+        self._fail(server_mod, server_mod._due_steps(_tm(0, 10, days_later=1)))
+        assert len(server_mod._due_steps(_tm(0, 12, days_later=1))) == 1

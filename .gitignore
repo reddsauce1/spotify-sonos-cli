@@ -12,3 +12,4 @@ stations.json.tmp
 .coverage
 coverage.json
 htmlcov/
+CLAUDE.md

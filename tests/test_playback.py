@@ -97,10 +97,12 @@ class TestSonosRequest:
 
 
 class TestDoPlay:
-    def test_play_by_uri_success(self, dj):
+    def test_play_by_uri_success(self, dj, server_mod):
         with patch.object(dj, "_sonos_request", return_value={"ok": True}) as sonos:
             result = dj._do_play(uri="spotify:track:abc123")
-        sonos.assert_called_once_with("spotify/now/spotify:track:abc123")
+        sonos.assert_called_once_with(
+            "spotify/now/spotify:track:abc123", timeout=server_mod.SONOS_CONTENT_TIMEOUT
+        )
         assert result == {"status": "playing", "uri": "spotify:track:abc123"}
 
     def test_play_by_uri_error_propagates(self, dj):
@@ -121,7 +123,9 @@ class TestDoPlay:
         server_mod.set_results(ONE_RESULT, "global")
         with patch.object(dj, "_sonos_request", return_value={"ok": True}) as sonos:
             result = dj._do_play(num=1)
-        sonos.assert_called_once_with("spotify/now/spotify:track:aaa")
+        sonos.assert_called_once_with(
+            "spotify/now/spotify:track:aaa", timeout=server_mod.SONOS_CONTENT_TIMEOUT
+        )
         assert result["status"] == "playing"
         assert result["item"]["name"] == "Song A"
 
@@ -168,14 +172,18 @@ class TestDoQueue:
             [{"num": 1, "name": "Track", "artist": "A", "uri": "spotify:track:q1"}], "global")
         with patch.object(dj, "_sonos_request", return_value={"ok": True}) as sonos:
             result = dj._do_queue(num=1)
-        sonos.assert_called_once_with("spotify/queue/spotify:track:q1")
+        sonos.assert_called_once_with(
+            "spotify/queue/spotify:track:q1", timeout=server_mod.SONOS_CONTENT_TIMEOUT
+        )
         assert result["status"] == "queued"
         assert result["item"]["uri"] == "spotify:track:q1"
 
-    def test_queue_by_uri_success(self, dj):
+    def test_queue_by_uri_success(self, dj, server_mod):
         with patch.object(dj, "_sonos_request", return_value={"ok": True}) as sonos:
             result = dj._do_queue(uri="spotify:track:xyz")
-        sonos.assert_called_once_with("spotify/queue/spotify:track:xyz")
+        sonos.assert_called_once_with(
+            "spotify/queue/spotify:track:xyz", timeout=server_mod.SONOS_CONTENT_TIMEOUT
+        )
         assert result == {"status": "queued", "uri": "spotify:track:xyz"}
 
     def test_queue_by_num_error_propagates(self, dj, server_mod):
@@ -204,13 +212,17 @@ class TestDoNext:
             [{"num": 1, "name": "Nxt", "artist": "B", "uri": "spotify:track:n1"}], "global")
         with patch.object(dj, "_sonos_request", return_value={"ok": True}) as sonos:
             result = dj._do_next(num=1)
-        sonos.assert_called_once_with("spotify/next/spotify:track:n1")
+        sonos.assert_called_once_with(
+            "spotify/next/spotify:track:n1", timeout=server_mod.SONOS_CONTENT_TIMEOUT
+        )
         assert result["status"] == "playing next"
 
-    def test_next_by_uri_success(self, dj):
+    def test_next_by_uri_success(self, dj, server_mod):
         with patch.object(dj, "_sonos_request", return_value={"ok": True}) as sonos:
             result = dj._do_next(uri="spotify:track:n2")
-        sonos.assert_called_once_with("spotify/next/spotify:track:n2")
+        sonos.assert_called_once_with(
+            "spotify/next/spotify:track:n2", timeout=server_mod.SONOS_CONTENT_TIMEOUT
+        )
         assert result == {"status": "playing next", "uri": "spotify:track:n2"}
 
     def test_next_by_num_error_propagates(self, dj, server_mod):
