@@ -9,7 +9,13 @@ from unittest.mock import patch
 import pytest
 import requests
 
-from paths import QUEUEEDIT_JS
+from paths import INDEX_HTML, QUEUEEDIT_JS
+
+
+@pytest.fixture(scope="module")
+def markup():
+    with open(INDEX_HTML) as handle:
+        return handle.read()
 
 
 QUEUE = [{"title": "Shampoo", "artist": "A"},
@@ -144,3 +150,96 @@ class TestSonosActionPlugin:
         positions in the pre-move numbering."""
         source = open(QUEUEEDIT_JS).read()
         assert "to > from ? to + 1 : to" in source
+
+
+# Two genuinely different tracks that share a title -- routine on
+# compilations, near-guaranteed on classical. This is the case the old
+# title-based guard could not see.
+SAME_NAME = [
+    {"title": "Prelude", "artist": "Chopin",
+     "uri": "x-sonos-spotify:spotify%3atrack%3aAAA?sid=12"},
+    {"title": "Prelude", "artist": "Debussy",
+     "uri": "x-sonos-spotify:spotify%3atrack%3aBBB?sid=12"},
+]
+
+
+class TestTheGuardUsesUris:
+    """A title is not an identifier. Two different tracks can share one, and
+    that is precisely when getting it wrong reorders something the user never
+    touched."""
+
+    def test_the_matching_uri_is_allowed(self, dj, server_mod):
+        with patch.object(server_mod, "_sonos_get_queue", side_effect=_window(SAME_NAME)):
+            with patch.object(dj, "_sonos_request", return_value={"ok": True}) as req:
+                result = dj.queue_move(index=1, to=2, uri=SAME_NAME[0]["uri"])
+        assert result["status"] == "moved"
+        req.assert_called_once_with("queuemove/1/2")
+
+    def test_a_different_track_with_the_same_title_is_refused(self, dj, server_mod):
+        """The old guard compared titles and would have waved this through."""
+        with patch.object(server_mod, "_sonos_get_queue", side_effect=_window(SAME_NAME)):
+            with patch.object(dj, "_sonos_request") as req:
+                with pytest.raises(server_mod.cherrypy.HTTPError) as excinfo:
+                    dj.queue_move(index=1, to=2, uri=SAME_NAME[1]["uri"])
+        assert excinfo.value.status == 409
+        req.assert_not_called()
+
+    def test_the_titles_being_equal_does_not_rescue_it(self, dj, server_mod):
+        """Belt and braces: passing the right title with the wrong uri must
+        still be refused, or the fallback would silently undo the fix."""
+        with patch.object(server_mod, "_sonos_get_queue", side_effect=_window(SAME_NAME)):
+            with patch.object(dj, "_sonos_request") as req:
+                with pytest.raises(server_mod.cherrypy.HTTPError):
+                    dj.queue_move(index=1, to=2,
+                                  uri=SAME_NAME[1]["uri"], title="Prelude")
+        req.assert_not_called()
+
+    def test_remove_is_guarded_the_same_way(self, dj, server_mod):
+        with patch.object(server_mod, "_sonos_get_queue", side_effect=_window(SAME_NAME)):
+            with patch.object(dj, "_sonos_request") as req:
+                with pytest.raises(server_mod.cherrypy.HTTPError) as excinfo:
+                    dj.queue_remove(index=2, uri=SAME_NAME[0]["uri"])
+        assert excinfo.value.status == 409
+        req.assert_not_called()
+
+    def test_a_stale_tab_posting_a_title_is_still_guarded(self, dj, server_mod):
+        """A browser that loaded before this change posts titles. Weaker, but
+        an unguarded edit would be weaker still."""
+        with patch.object(server_mod, "_sonos_get_queue", side_effect=_window(QUEUE)):
+            with patch.object(dj, "_sonos_request") as req:
+                with pytest.raises(server_mod.cherrypy.HTTPError) as excinfo:
+                    dj.queue_move(index=1, to=2, title="Something Else")
+        assert excinfo.value.status == 409
+        req.assert_not_called()
+
+
+class TestTheQueueCarriesUris:
+    def test_the_detailed_endpoint_is_used(self, server_mod):
+        """The plain form runs the items through a simplify() that drops the
+        uri, leaving the guard nothing but titles to compare."""
+        class _Response:
+            status_code = 200
+            @staticmethod
+            def json():
+                return []
+        with patch.object(server_mod.requests, "get", return_value=_Response()) as get:
+            server_mod._sonos_get_queue(limit=50, offset=0)
+        assert get.call_args[0][0].endswith("/queue/50/0/detailed")
+
+    def test_the_window_hands_the_uri_to_the_browser(self, dj, server_mod):
+        """The UI cannot send back an identifier it was never given."""
+        with patch.object(server_mod, "_sonos_get_queue", side_effect=_window(SAME_NAME)):
+            with patch.object(dj, "_sonos_request", return_value={}):
+                payload = dj.queue_window(offset=0, limit=2)
+        assert all("uri" in entry for entry in payload["queue"])
+
+
+class TestTheBrowserSendsIt:
+    def test_the_row_carries_the_uri(self, markup):
+        assert "data-uri=" in markup
+
+    def test_a_move_posts_the_uri(self, markup):
+        assert "{index: from, to: to, uri: uri}" in markup
+
+    def test_a_remove_posts_the_uri(self, markup):
+        assert "{index: pos, uri: row.dataset.uri}" in markup

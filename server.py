@@ -1062,8 +1062,15 @@ _stations = _load_stations()
 
 
 def _sonos_get_queue(limit, offset=0):
-    """Read a window of the queue. Raises on transport failure."""
-    url = f"{SONOS_URL}/queue/{int(limit)}/{int(offset)}"
+    """Read a window of the queue. Raises on transport failure.
+
+    `/detailed` rather than the plain form: node-sonos-http-api otherwise runs
+    the items through a simplify() that keeps only title, artist, album and
+    art, throwing away the `uri` that came off the wire. That uri is the only
+    per-item identifier the queue offers, and without it the optimistic-
+    concurrency check has nothing to compare but titles.
+    """
+    url = f"{SONOS_URL}/queue/{int(limit)}/{int(offset)}/detailed"
     response = requests.get(url, timeout=SONOS_TIMEOUT)
     if response.status_code != 200:
         raise RuntimeError(f"Sonos returned HTTP {response.status_code} for the queue")
@@ -1083,21 +1090,40 @@ def _is_container_uri(uri):
     return not str(uri).startswith('spotify:track:')
 
 
-def _guard_queue_index(index, expected_title):
+def _guard_queue_index(index, expected_uri=None, expected_title=None):
     """Refuse the edit if the queue moved under the caller.
 
     A drag that began ten seconds ago may now point at a different track,
     because tracks finish and other clients add and remove. Rejecting with a
     409 and letting the client refresh beats silently reordering something
     the user never touched.
+
+    Compares the track uri. This used to compare titles, which collided
+    exactly where it mattered: two different tracks sharing a name -- routine
+    on compilations, and near-guaranteed on classical -- looked identical to
+    the guard, so it would either refuse a legitimate move or wave through a
+    move of the wrong track. Uris collide only between copies of the *same*
+    track, where picking either one is indistinguishable.
+
+    The title check is kept as a fallback for a browser tab that loaded before
+    this change and is still posting titles. It is weaker, and saying so is
+    the point: an unguarded edit would be weaker still.
     """
     track = _queue_track_at(index)
     if track is None:
         _bad_request(f"there is no track at position {index}")
-    actual = (track.get('title') or '').strip()
-    if expected_title is not None and actual != (expected_title or '').strip():
-        raise cherrypy.HTTPError(
-            409, f"position {index} now holds {actual!r} -- the queue moved, refresh and retry")
+
+    if expected_uri:
+        if (track.get('uri') or '') != expected_uri:
+            raise cherrypy.HTTPError(
+                409,
+                f"position {index} now holds {(track.get('title') or 'something else')!r}"
+                " -- the queue moved, refresh and retry")
+    elif expected_title is not None:
+        actual = (track.get('title') or '').strip()
+        if actual != (expected_title or '').strip():
+            raise cherrypy.HTTPError(
+                409, f"position {index} now holds {actual!r} -- the queue moved, refresh and retry")
     return track
 
 
@@ -1766,19 +1792,20 @@ class DJServer:
     @cherrypy.expose
     @cherrypy.tools.json_out()
     @cherrypy.tools.allow(methods=['POST'])
-    def queue_move(self, index=None, to=None, title=None):
+    def queue_move(self, index=None, to=None, uri=None, title=None):
         """Move the track at `index` so it ends up at position `to`.
 
-        Both are 1-based, matching what the queue listing shows. `title` is
-        the caller's belief about what sits at `index`; the move is refused
-        with 409 if that no longer holds.
+        Both are 1-based, matching what the queue listing shows. `uri` is the
+        caller's belief about what sits at `index`; the move is refused with
+        409 if that no longer holds. `title` is the older, weaker form of the
+        same check -- see _guard_queue_index.
         """
         start = _validate_int(index, "index", 1, 100000)
         dest = _validate_int(to, "to", 1, 100000)
         if start == dest:
             return {"status": "unchanged", "index": start}
 
-        track = _guard_queue_index(start, title)
+        track = _guard_queue_index(start, expected_uri=uri, expected_title=title)
 
         result = self._sonos_request(f"queuemove/{start}/{dest}")
         if "error" in result:
@@ -1790,10 +1817,10 @@ class DJServer:
     @cherrypy.expose
     @cherrypy.tools.json_out()
     @cherrypy.tools.allow(methods=['POST'])
-    def queue_remove(self, index=None, title=None):
-        """Remove the track at a 1-based `index`, guarded by `title`."""
+    def queue_remove(self, index=None, uri=None, title=None):
+        """Remove the track at a 1-based `index`, guarded by `uri`."""
         position = _validate_int(index, "index", 1, 100000)
-        track = _guard_queue_index(position, title)
+        track = _guard_queue_index(position, expected_uri=uri, expected_title=title)
 
         result = self._sonos_request(f"queueremove/{position}")
         if "error" in result:

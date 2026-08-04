@@ -1086,6 +1086,7 @@
       const n = QUEUE_OFFSET + i + 1;
       const cls = n < pos ? 'row played' : (n === pos ? 'row current' : 'row');
       return '<div class="' + cls + '" draggable="true" data-pos="' + n + '" ' +
+             'data-uri="' + escapeHtml(t.uri || '') + '" ' +
              'data-title="' + escapeHtml(t.title) + '">' +
         '<span class="grip">⠿</span>' +
         '<div class="row-num">' + (n === pos ? '▶' : n) + '</div>' +
@@ -1150,7 +1151,7 @@
         if (after && over < from) to = over + 1;
         if (!after && over > from) to = over - 1;
         clearDropMarks();
-        moveInQueue(from, to, dragFrom.dataset.title);
+        moveInQueue(from, to, dragFrom.dataset.uri);
       });
     });
   }
@@ -1160,9 +1161,11 @@
       .forEach(el => el.classList.remove('dropbefore', 'dropafter'));
   }
 
-  function moveInQueue(from, to, title) {
+  // The uri, not the title: two different tracks can share a name, and the
+  // guard on the server has to be able to tell them apart.
+  function moveInQueue(from, to, uri) {
     if (from === to) return;
-    post('/queue_move', new URLSearchParams({index: from, to: to, title: title}).toString())
+    post('/queue_move', new URLSearchParams({index: from, to: to, uri: uri}).toString())
       .then(({ok, data}) => {
         showToast(ok ? '↕ Moved to ' + to : '❌ ' + (data.error || 'Move failed'));
         loadQueue();
@@ -1172,7 +1175,7 @@
   function removeFromQueue(pos, button) {
     const row = button.closest('.row');
     post('/queue_remove',
-      new URLSearchParams({index: pos, title: row.dataset.title}).toString())
+      new URLSearchParams({index: pos, uri: row.dataset.uri}).toString())
       .then(({ok, data}) => {
         showToast(ok ? '✕ Removed' : '❌ ' + (data.error || 'Remove failed'));
         loadQueue();
