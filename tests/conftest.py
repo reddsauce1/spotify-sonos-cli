@@ -97,6 +97,23 @@ def _never_touch_real_data(monkeypatch, tmp_path):
     # to id "sch_test" -- so without this a claim left by one test blocks the
     # identically-named step in the next one.
     monkeypatch.setattr(server_module, "_steps_in_flight", set())
+    # Same reasoning: the watchdog latches on transitions, so a test that left
+    # it "down" would suppress the alert the next test is asserting on.
+    monkeypatch.setattr(server_module, "_watchdog", {
+        'ok': None, 'consecutive_failures': 0,
+        'detail': 'not yet checked', 'changed_at': None, 'outages': 0,
+    })
+    monkeypatch.setattr(server_module, "_metrics", {
+        'sonos_calls': 0, 'sonos_failures': 0,
+        'sonos_seconds_total': 0.0, 'sonos_seconds_max': 0.0,
+        'content_loads': 0, 'content_seconds_max': 0.0,
+        'events_received': 0, 'stream_clients_peak': 0,
+        'schedule_fires': 0, 'schedule_failures': 0, 'chat_calls': 0,
+    })
+    # Otherwise a load recorded by one test suppresses the identical load the
+    # next test is trying to make.
+    monkeypatch.setattr(server_module, "_content_loads", {})
+    monkeypatch.setattr(server_module, "_stream_clients", [])
     yield
 
 

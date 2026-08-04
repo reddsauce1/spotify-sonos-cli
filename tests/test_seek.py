@@ -155,7 +155,7 @@ class TestWiring:
         assert body.index('id="seek"') < body.index("<main")
 
     def test_poll_feeds_the_bar(self, markup):
-        np = markup.split("function refreshNowPlaying(", 1)[1].split("\n  }", 1)[0]
+        np = markup.split("function paintNowPlaying(", 1)[1].split("\n  }", 1)[0]
         assert "syncSeek(data)" in np
 
     def test_ticks_once_a_second(self, markup):

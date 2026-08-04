@@ -11,8 +11,10 @@ import json
 import logging
 import logging.handlers
 import os
+import queue
 import re
 import secrets
+import subprocess
 import sys
 import threading
 import time
@@ -110,6 +112,30 @@ DEFAULTS = {
     # the time a failed call returns that minute is often gone.
     "schedule_max_attempts": 3,
     "schedule_retry_window_seconds": 300,
+    # launchd's KeepAlive only sees the process. It cannot see the case that
+    # actually happened: node-sonos-http-api alive and answering, but with no
+    # system discovered, so every playback call fails. The watchdog watches for
+    # that and says so once per outage rather than once per tick.
+    # A content load that timed out may still be running on the speaker: the
+    # 8,864-track add came back at ~46s having worked, long after the caller
+    # gave up. Repeating it queued another 8,864 tracks. Within this window a
+    # repeat of the same container collapses into the first one instead.
+    "content_dedup_seconds": 180,
+    # /nowplaying was ~90% of all traffic: every open tab polled it every 10s
+    # whether anything had changed or not. node-sonos-http-api can POST the
+    # moment something actually changes, so the browser is told instead of
+    # asking. Note the cost: CherryPy is thread-per-connection, so every open
+    # stream holds a worker for its lifetime. The default pool of 10 would be
+    # exhausted by a handful of tabs, hence both numbers below.
+    "server_thread_pool": 30,
+    "max_stream_clients": 12,
+    # Cloudflare will close an idle tunnelled connection; a comment line keeps
+    # it open and lets the browser notice a dead stream and reconnect.
+    "stream_heartbeat_seconds": 25,
+    "sonos_readiness_timeout": 3,
+    "watchdog_tick_seconds": 60,
+    "watchdog_failures_before_alert": 2,
+    "watchdog_notify": True,
     "max_schedules": 50,
     "max_steps_per_schedule": 20,
     "max_stations": 50,
@@ -307,6 +333,27 @@ SCHEDULES_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'sched
 SCHEDULE_TICK_SECONDS = _setting('schedule_tick_seconds')
 SCHEDULE_MAX_ATTEMPTS = _setting('schedule_max_attempts')
 SCHEDULE_RETRY_WINDOW_SECONDS = _setting('schedule_retry_window_seconds')
+CONTENT_DEDUP_SECONDS = _setting('content_dedup_seconds')
+MAX_STREAM_CLIENTS = _setting('max_stream_clients')
+STREAM_HEARTBEAT_SECONDS = _setting('stream_heartbeat_seconds')
+
+# One bounded queue per connected browser. Bounded on purpose: a client that
+# has stopped reading -- a laptop that slept with the tab open -- must not grow
+# a queue until the process dies. It drops events and resyncs on reconnect.
+_stream_clients = []
+_stream_lock = threading.Lock()
+SONOS_READINESS_TIMEOUT = _setting('sonos_readiness_timeout')
+
+# Named because the dedupe below has to tell an ambiguous failure from a
+# certain one, and matching on a loose string in two places would rot.
+SONOS_TIMEOUT_ERROR = "Sonos request timed out"
+
+# (action, uri) -> {'finished': monotonic or None, 'result': dict or None}
+_content_loads = {}
+_content_lock = threading.Lock()
+WATCHDOG_TICK_SECONDS = _setting('watchdog_tick_seconds')
+WATCHDOG_FAILURES_BEFORE_ALERT = _setting('watchdog_failures_before_alert')
+WATCHDOG_NOTIFY = _setting('watchdog_notify')
 
 # (entry id, step index) for every step a tick is currently firing. Claiming is
 # minute-based and a Sonos call can outlast several ticks, so without this the
@@ -622,7 +669,9 @@ def _record_step_outcome(claimed, ok, error):
         if ok:
             step['last_fired'] = stamp
             step.pop('last_error', None)
+            _record_metric('schedule_fires')
         else:
+            _record_metric('schedule_failures')
             step['last_error'] = {
                 'date': stamp,
                 'message': error,
@@ -674,6 +723,171 @@ def _fire_schedule(dj, entry):
 
     log.info("Schedule %r ran %s", label, action)
     return True, None
+
+
+def _broadcast(payload):
+    """Hand one event to every connected browser.
+
+    Never blocks and never raises. A slow or dead client gets its event
+    dropped rather than stalling the Sonos webhook that is delivering it --
+    the stream is a convenience, and the poll fallback still covers anyone
+    who misses one.
+    """
+    message = f"data: {json.dumps(payload)}\n\n"
+    with _stream_lock:
+        clients = list(_stream_clients)
+    delivered = 0
+    for client in clients:
+        try:
+            client.put_nowait(message)
+            delivered += 1
+        except queue.Full:
+            log.debug("Stream client is not keeping up; dropping an event")
+    return delivered
+
+
+def _sonos_readiness():
+    """Is Sonos actually usable right now? Returns (ok, detail).
+
+    One implementation with two callers -- /health reports it, the watchdog
+    alerts on it. Two copies of this rule would be free to drift, which is the
+    same trap _next_run and _due_steps sit in.
+
+    A 200 is deliberately not enough. node-sonos-http-api answers before SSDP
+    discovery has found anything, and an empty zone list means every playback
+    call is about to fail.
+    """
+    try:
+        response = requests.get(f"{SONOS_BASE_URL}/zones",
+                                timeout=SONOS_READINESS_TIMEOUT)
+    except requests.exceptions.RequestException as exc:
+        # Class name only -- the full message can carry internal hostnames.
+        return False, f"error: {exc.__class__.__name__}"
+
+    if response.status_code != 200:
+        return False, f"error: HTTP {response.status_code}"
+    try:
+        zones = response.json()
+    except ValueError:
+        return False, "error: unparseable zone list"
+    if not zones:
+        return False, "error: no zones discovered"
+    return True, "ok"
+
+
+_watchdog = {
+    'ok': None,            # None until the first check, so boot is not an alert
+    'consecutive_failures': 0,
+    'detail': 'not yet checked',
+    'changed_at': None,
+    'outages': 0,
+}
+_watchdog_lock = threading.Lock()
+
+
+# Counters, not a log. The log answers "what happened at 07:00"; these answer
+# "is this getting worse", which no amount of grepping a rotating file does
+# well. In-process and therefore reset by a restart -- uptime_seconds is
+# reported alongside so a reading is never mistaken for all-time history.
+_metrics = {
+    'sonos_calls': 0,
+    'sonos_failures': 0,
+    'sonos_seconds_total': 0.0,
+    'sonos_seconds_max': 0.0,
+    'content_loads': 0,
+    'content_seconds_max': 0.0,
+    'events_received': 0,
+    'stream_clients_peak': 0,
+    'schedule_fires': 0,
+    'schedule_failures': 0,
+    'chat_calls': 0,
+}
+_metrics_lock = threading.Lock()
+
+
+def _is_content_endpoint(endpoint):
+    """Content loads expand a whole container and are the slow class; keeping
+    them out of the transport average is the difference between a useful
+    number and one dominated by a single 46-second playlist."""
+    return endpoint.startswith('spotify/')
+
+
+def _record_sonos_call(endpoint, seconds, ok):
+    with _metrics_lock:
+        _metrics['sonos_calls'] += 1
+        if not ok:
+            _metrics['sonos_failures'] += 1
+        if _is_content_endpoint(endpoint):
+            _metrics['content_loads'] += 1
+            _metrics['content_seconds_max'] = max(_metrics['content_seconds_max'], seconds)
+        else:
+            _metrics['sonos_seconds_total'] += seconds
+            _metrics['sonos_seconds_max'] = max(_metrics['sonos_seconds_max'], seconds)
+
+
+def _record_metric(name, amount=1):
+    with _metrics_lock:
+        _metrics[name] += amount
+
+
+def _notify(title, message):
+    """Best-effort desktop notification. Never raises, never blocks a tick.
+
+    A log line is not an alert -- nobody was reading the log the morning Sonos
+    went dark for hours. This is the part that actually reaches someone.
+    """
+    if not WATCHDOG_NOTIFY:
+        return
+    try:
+        subprocess.run(
+            ['osascript', '-e',
+             f'display notification {json.dumps(message)} with title {json.dumps(title)}'],
+            capture_output=True, timeout=5, check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        log.warning("Could not post notification: %s", exc.__class__.__name__)
+
+
+def check_sonos_readiness():
+    """Watchdog tick. Alerts on the transition, not on every failing check.
+
+    Alerting per tick would mean 60 notifications an hour for one outage, which
+    trains you to ignore them.
+    """
+    try:
+        ok, detail = _sonos_readiness()
+        with _watchdog_lock:
+            was = _watchdog['ok']
+            _watchdog['detail'] = detail
+            _watchdog['consecutive_failures'] = 0 if ok else _watchdog['consecutive_failures'] + 1
+
+            # One blip between ticks is not an outage; Sonos is on wifi.
+            newly_down = (not ok
+                          and was is not False
+                          and _watchdog['consecutive_failures'] >= WATCHDOG_FAILURES_BEFORE_ALERT)
+            recovered = ok and was is False
+
+            if newly_down:
+                _watchdog['ok'] = False
+                _watchdog['outages'] += 1
+                _watchdog['changed_at'] = time.time()
+            elif recovered:
+                _watchdog['ok'] = True
+                _watchdog['changed_at'] = time.time()
+            elif was is None and ok:
+                _watchdog['ok'] = True
+                _watchdog['changed_at'] = time.time()
+
+        if newly_down:
+            log.error("Sonos unreachable: %s", detail)
+            _notify("DJ server", f"Sonos is unreachable -- {detail}")
+        elif recovered:
+            log.info("Sonos recovered")
+            _notify("DJ server", "Sonos is back")
+    except Exception as exc:
+        # Same reasoning as the scheduler tick: a raising Monitor thread dies
+        # silently, and a dead watchdog is worse than none because it looks fine.
+        log.error("Watchdog tick failed: %s: %s", type(exc).__name__, exc)
 
 
 def run_due_schedules(dj):
@@ -811,6 +1025,12 @@ def _queue_track_at(index):
     """Read the single queue entry at a 1-based index, or None."""
     entries = _sonos_get_queue(limit=1, offset=index - 1)
     return entries[0] if entries else None
+
+
+def _is_container_uri(uri):
+    """A playlist or album -- the kind Sonos expands track by track, and the
+    only kind slow enough to be worth deduplicating."""
+    return not str(uri).startswith('spotify:track:')
 
 
 def _guard_queue_index(index, expected_title):
@@ -965,6 +1185,18 @@ def _validate_int(value, name, minimum, maximum):
     if number < minimum or number > maximum:
         _bad_request(f"{name} must be between {minimum} and {maximum}, got {number}")
     return number
+
+
+def _truthy(value):
+    """Read an optional query-string flag.
+
+    Absent means false. Anything a caller would plausibly type for yes counts
+    -- including the bare '?force' that CherryPy hands over as an empty
+    string, which would otherwise read as no.
+    """
+    if value is None:
+        return False
+    return str(value).strip().lower() in ('', '1', 'true', 'yes', 'on')
 
 
 def _validate_volume_change(change):
@@ -1301,23 +1533,9 @@ class DJServer:
         """
         checks = {}
 
-        try:
-            response = requests.get(f"{SONOS_BASE_URL}/zones", timeout=3)
-            if response.status_code != 200:
-                checks["sonos"] = f"error: HTTP {response.status_code}"
-            else:
-                # A 200 is not the same as a working system. node-sonos-http-api
-                # answers before SSDP discovery has found anything, and an empty
-                # zone list means every playback call is about to fail.
-                try:
-                    zones = response.json()
-                except ValueError:
-                    checks["sonos"] = "error: unparseable zone list"
-                else:
-                    checks["sonos"] = "ok" if zones else "error: no zones discovered"
-        except requests.exceptions.RequestException as exc:
-            # Class name only -- the full message can carry internal hostnames.
-            checks["sonos"] = f"error: {exc.__class__.__name__}"
+        # Shared with the watchdog rather than reimplemented -- see
+        # _sonos_readiness for why there is exactly one copy of this rule.
+        _, checks["sonos"] = _sonos_readiness()
 
         try:
             sp.me()
@@ -1344,6 +1562,118 @@ class DJServer:
             cherrypy.response.status = 503
 
         return checks
+
+    @cherrypy.expose
+    @cherrypy.tools.json_out()
+    @cherrypy.tools.allow(methods=['POST'])
+    def sonos_event(self, **_):
+        """Receive one push from node-sonos-http-api and fan it out.
+
+        Authenticated by the same X-DJ-Token as the CLI, configured on the
+        Sonos side as webhookHeaderName/webhookHeaderContents -- this endpoint
+        is reachable from the tunnel like everything else, so it cannot be
+        open.
+
+        The payload is deliberately rebuilt with _do_nowplaying rather than
+        translated from the event body. Sonos sends a player object, and a
+        second mapping from that shape to the UI's would be a second thing to
+        keep in step with the first.
+        """
+        try:
+            body = cherrypy.request.body.read(MAX_REQUEST_BODY_BYTES)
+            event = json.loads(body) if body else {}
+        except ValueError:
+            _bad_request("event body was not JSON")
+
+        kind = event.get('type', 'unknown')
+        # topology-change fires on grouping and on discovery settling; it says
+        # nothing about the track, so it is not worth waking every browser for.
+        if kind == 'topology-change':
+            return {"status": "ignored", "type": kind}
+
+        payload = self._do_nowplaying()
+        payload['event'] = kind
+        delivered = _broadcast(payload)
+        _record_metric('events_received')
+        return {"status": "broadcast", "type": kind, "clients": delivered}
+
+    @cherrypy.expose
+    def stream(self):
+        """Server-sent events for the browser: told, rather than asking.
+
+        Replaces a 10-second poll that was about 90% of all traffic. Every
+        connected stream holds a CherryPy worker thread for its lifetime,
+        which is why there is a hard client cap -- running out of workers
+        would take down the whole server, not just the stream.
+        """
+        cherrypy.response.headers['Content-Type'] = 'text/event-stream'
+        cherrypy.response.headers['Cache-Control'] = 'no-cache'
+        # Tells any buffering proxy in front of us to pass bytes straight
+        # through; without it an event can sit unsent for minutes.
+        cherrypy.response.headers['X-Accel-Buffering'] = 'no'
+
+        with _stream_lock:
+            if len(_stream_clients) >= MAX_STREAM_CLIENTS:
+                raise cherrypy.HTTPError(
+                    503, "too many open streams -- the UI will fall back to polling")
+            client = queue.Queue(maxsize=32)
+            _stream_clients.append(client)
+            connected = len(_stream_clients)
+        with _metrics_lock:
+            _metrics['stream_clients_peak'] = max(
+                _metrics['stream_clients_peak'], connected)
+
+        def events():
+            try:
+                # Send the current state immediately, so a browser that has
+                # just connected is never showing a blank player while it
+                # waits for something to change.
+                yield f"data: {json.dumps(self._do_nowplaying())}\n\n"
+                while True:
+                    try:
+                        yield client.get(timeout=STREAM_HEARTBEAT_SECONDS)
+                    except queue.Empty:
+                        yield ": keepalive\n\n"
+            finally:
+                # Runs on client disconnect too -- CherryPy closes the
+                # generator, and a leaked entry would hold a worker forever.
+                with _stream_lock:
+                    if client in _stream_clients:
+                        _stream_clients.remove(client)
+
+        return events()
+    stream._cp_config = {'response.stream': True}
+
+    @cherrypy.expose
+    @cherrypy.tools.json_out()
+    def metrics(self):
+        """Counters since process start.
+
+        Separate from /health on purpose: /health is polled by the watchdog and
+        by anything alerting, and must stay cheap and side-effect free. This
+        makes a live Sonos call nowhere -- it only reads what has already
+        happened.
+
+        Averages are computed here rather than stored so the stored numbers
+        stay addable; transport and content are kept apart because one 46s
+        playlist would otherwise swallow the transport average whole.
+        """
+        with _metrics_lock:
+            snapshot = dict(_metrics)
+        with _watchdog_lock:
+            watchdog = dict(_watchdog)
+
+        transport_calls = snapshot['sonos_calls'] - snapshot['content_loads']
+        snapshot['sonos_seconds_avg'] = round(
+            snapshot['sonos_seconds_total'] / transport_calls, 4
+        ) if transport_calls else 0.0
+        snapshot['sonos_seconds_total'] = round(snapshot['sonos_seconds_total'], 3)
+        snapshot['sonos_seconds_max'] = round(snapshot['sonos_seconds_max'], 3)
+        snapshot['content_seconds_max'] = round(snapshot['content_seconds_max'], 3)
+        snapshot['uptime_seconds'] = round(time.monotonic() - SERVER_START)
+        snapshot['sonos_ready'] = watchdog['ok']
+        snapshot['sonos_outages'] = watchdog['outages']
+        return snapshot
 
     # ==================== QUEUE EDITING ====================
 
@@ -1596,7 +1926,8 @@ class DJServer:
             _bad_request(
                 f"Message too long -- keep it under {MAX_CHAT_MESSAGE_CHARS} characters")
         _check_chat_rate(session_id)
-        
+        _record_metric('chat_calls')
+
         # Get Claude's interpretation
         claude_response = call_claude(message, session_id)
         
@@ -1700,14 +2031,24 @@ class DJServer:
         what to do with it -- chat() turns it into a friendly sentence, and
         the _do_* helpers propagate it. The 502 is set here, at the single
         point where an upstream failure is detected, so no caller can forget.
+
+        Every Sonos call funnels through here, so this is also the one place
+        worth counting from -- see _record_sonos_call.
         """
+        started = time.monotonic()
+        result = self._sonos_fetch(endpoint, timeout)
+        _record_sonos_call(endpoint, time.monotonic() - started, "error" not in result)
+        return result
+
+    def _sonos_fetch(self, endpoint, timeout=None):
+        """The request itself. Split out only so _sonos_request can time it."""
         if timeout is None:
             timeout = SONOS_TIMEOUT
         url = f"{SONOS_URL}/{endpoint.lstrip('/')}"
         try:
             response = requests.get(url, timeout=timeout)
         except requests.exceptions.Timeout:
-            return self._sonos_error("Sonos request timed out", endpoint)
+            return self._sonos_error(SONOS_TIMEOUT_ERROR, endpoint)
         except requests.exceptions.ConnectionError:
             return self._sonos_error(
                 "Cannot reach Sonos API (node-sonos-http-api)", endpoint
@@ -1820,63 +2161,109 @@ class DJServer:
         set_results(output, session_id)
         return {"query": q, "type": type, "results": output}
 
-    def _do_play(self, num=None, uri=None, session_id='global'):
+    def _content_load(self, action, uri, force=False):
+        """Issue spotify/{now,queue,next}, collapsing a repeat of the same
+        container into the load already in flight or just completed.
+
+        Only containers are deduplicated. A track add returns in about 50ms
+        and never times out, so it is never retried -- refusing a deliberate
+        second copy of the same song would cost something and prevent nothing.
+
+        A timed-out load is remembered as *ambiguous*, not as failed: the add
+        may well have landed on the speaker after we stopped waiting, which is
+        exactly how one queue reached 8,950 tracks. A connection error is a
+        different thing -- nothing reached the speaker -- so it is deliberately
+        not remembered, or the scheduler's retry would have nothing to retry.
+        """
+        validated = _validate_uri(uri)
+        endpoint = f"spotify/{action}/{validated}"
+
+        if force or not _is_container_uri(uri):
+            return self._sonos_request(endpoint, timeout=SONOS_CONTENT_TIMEOUT)
+
+        key = (action, validated)
+        now = time.monotonic()
+        with _content_lock:
+            for stale, entry in [(k, v) for k, v in _content_loads.items()
+                                 if now - v['at'] > CONTENT_DEDUP_SECONDS]:
+                del _content_loads[stale]
+
+            existing = _content_loads.get(key)
+            if existing is not None:
+                if existing['finished'] is None:
+                    return {"status": "already loading", "uri": uri, "deduped": True}
+                if existing['ambiguous']:
+                    return {
+                        "error": "an identical load timed out recently and may "
+                                 "still be running -- not repeated",
+                        "uri": uri, "deduped": True,
+                    }
+                return {**existing['result'], "deduped": True}
+
+            _content_loads[key] = {'at': now, 'finished': None,
+                                   'result': None, 'ambiguous': False}
+
+        try:
+            result = self._sonos_request(endpoint, timeout=SONOS_CONTENT_TIMEOUT)
+        except Exception:
+            with _content_lock:
+                _content_loads.pop(key, None)
+            raise
+
+        timed_out = result.get('error') == SONOS_TIMEOUT_ERROR
+        with _content_lock:
+            if 'error' in result and not timed_out:
+                # Certain failure: forget it so a retry can actually retry.
+                _content_loads.pop(key, None)
+            else:
+                entry = _content_loads.get(key)
+                if entry is not None:
+                    entry.update(at=time.monotonic(), finished=time.monotonic(),
+                                 result=result, ambiguous=timed_out)
+        return result
+
+    def _do_play(self, num=None, uri=None, session_id='global', force=False):
         if uri:
-            result = self._sonos_request(
-                f"spotify/now/{_validate_uri(uri)}", timeout=SONOS_CONTENT_TIMEOUT
-            )
+            result = self._content_load("now", uri, force=force)
             if "error" in result:
                 return result
             return {"status": "playing", "uri": uri}
 
         if num:
             item = self._get_result_item(num, session_id)
-            result = self._sonos_request(
-                f"spotify/now/{_validate_uri(item['uri'])}",
-                timeout=SONOS_CONTENT_TIMEOUT,
-            )
+            result = self._content_load("now", item['uri'], force=force)
             if "error" in result:
                 return result
             return {"status": "playing", "item": item}
 
         _bad_request("Provide num or uri")
 
-    def _do_queue(self, num=None, uri=None, session_id='global'):
+    def _do_queue(self, num=None, uri=None, session_id='global', force=False):
         if uri:
-            result = self._sonos_request(
-                f"spotify/queue/{_validate_uri(uri)}", timeout=SONOS_CONTENT_TIMEOUT
-            )
+            result = self._content_load("queue", uri, force=force)
             if "error" in result:
                 return result
             return {"status": "queued", "uri": uri}
 
         if num:
             item = self._get_result_item(num, session_id)
-            result = self._sonos_request(
-                f"spotify/queue/{_validate_uri(item['uri'])}",
-                timeout=SONOS_CONTENT_TIMEOUT,
-            )
+            result = self._content_load("queue", item['uri'], force=force)
             if "error" in result:
                 return result
             return {"status": "queued", "item": item}
 
         _bad_request("Provide num or uri")
 
-    def _do_next(self, num=None, uri=None, session_id='global'):
+    def _do_next(self, num=None, uri=None, session_id='global', force=False):
         if uri:
-            result = self._sonos_request(
-                f"spotify/next/{_validate_uri(uri)}", timeout=SONOS_CONTENT_TIMEOUT
-            )
+            result = self._content_load("next", uri, force=force)
             if "error" in result:
                 return result
             return {"status": "playing next", "uri": uri}
 
         if num:
             item = self._get_result_item(num, session_id)
-            result = self._sonos_request(
-                f"spotify/next/{_validate_uri(item['uri'])}",
-                timeout=SONOS_CONTENT_TIMEOUT,
-            )
+            result = self._content_load("next", item['uri'], force=force)
             if "error" in result:
                 return result
             return {"status": "playing next", "item": item}
@@ -2041,18 +2428,24 @@ class DJServer:
 
     @cherrypy.expose
     @cherrypy.tools.json_out()
-    def play(self, num=None, uri=None):
-        return self._do_play(num=num, uri=uri)
+    def play(self, num=None, uri=None, force=None):
+        # force=1 opts out of the container dedupe, for the rare case of
+        # genuinely wanting the same playlist queued twice in a row.
+        return self._do_play(num=num, uri=uri, force=_truthy(force))
 
     @cherrypy.expose
     @cherrypy.tools.json_out()
-    def queue(self, num=None, uri=None):
-        return self._do_queue(num=num, uri=uri)
+    def queue(self, num=None, uri=None, force=None):
+        # force=1 opts out of the container dedupe, for the rare case of
+        # genuinely wanting the same playlist queued twice in a row.
+        return self._do_queue(num=num, uri=uri, force=_truthy(force))
 
     @cherrypy.expose
     @cherrypy.tools.json_out()
-    def next(self, num=None, uri=None):
-        return self._do_next(num=num, uri=uri)
+    def next(self, num=None, uri=None, force=None):
+        # force=1 opts out of the container dedupe, for the rare case of
+        # genuinely wanting the same playlist queued twice in a row.
+        return self._do_next(num=num, uri=uri, force=_truthy(force))
 
     @cherrypy.expose
     @cherrypy.tools.json_out()
@@ -2375,6 +2768,9 @@ if __name__ == '__main__':
         # CherryPy defaults to 100MB. The largest legitimate body here is a
         # routine with the maximum number of steps, a few kilobytes; a 38MB
         # body was accepted, buffered and parsed.
+        # SSE holds a worker per connected browser; the default of 10
+        # would be exhausted by a few open tabs and stall every request.
+        'server.thread_pool': _setting('server_thread_pool'),
         'server.max_request_body_size': MAX_REQUEST_BODY_BYTES,
         # Without this CherryPy also writes both logs to stdout, which the
         # plist sends to the crash log -- every line stored twice, and the
@@ -2392,6 +2788,13 @@ if __name__ == '__main__':
         lambda: run_due_schedules(dj_server),
         frequency=SCHEDULE_TICK_SECONDS,
         name='dj_scheduler',
+    ).subscribe()
+
+    cherrypy.process.plugins.Monitor(
+        cherrypy.engine,
+        check_sonos_readiness,
+        frequency=WATCHDOG_TICK_SECONDS,
+        name='dj_watchdog',
     ).subscribe()
 
     cherrypy.quickstart(dj_server)

@@ -731,26 +731,31 @@
   }
 
   // ---- Player -----------------------------------------------------------
+  // Split from the fetch so the polled response and the pushed event paint
+  // through one function. Two painters would be free to drift, and the one
+  // that drifted would be whichever is harder to notice.
+  function paintNowPlaying(data) {
+    const playing = data.title && data.title !== 'Nothing playing';
+    document.getElementById('np-title').textContent = playing ? data.title : 'Nothing playing';
+    document.getElementById('np-artist').textContent = playing ? (data.artist || '') : '';
+    document.getElementById('np-album').textContent = playing ? (data.album || '') : '';
+    if (data.volume !== undefined && data.volume !== null && !volumeIsBusy()) {
+      paintVolume(data.volume);
+    }
+    if (data.shuffle !== undefined && Date.now() - SHUF.touchedAt > 2500) {
+      paintShuffle(data.shuffle);
+    }
+    // Artwork comes from Sonos in the same response. It must NOT come from
+    // /album_tracks: that endpoint writes to the shared numbered-results
+    // slot, so polling it for artwork silently replaced whatever the user
+    // had just searched for, and "queue number 1" then queued the wrong
+    // track entirely.
+    if (data.artwork) document.getElementById('art').src = data.artwork;
+    syncSeek(data);
+  }
+
   function refreshNowPlaying() {
-    fetch('/nowplaying').then(r => r.json()).then(data => {
-      const playing = data.title && data.title !== 'Nothing playing';
-      document.getElementById('np-title').textContent = playing ? data.title : 'Nothing playing';
-      document.getElementById('np-artist').textContent = playing ? (data.artist || '') : '';
-      document.getElementById('np-album').textContent = playing ? (data.album || '') : '';
-      if (data.volume !== undefined && data.volume !== null && !volumeIsBusy()) {
-        paintVolume(data.volume);
-      }
-      if (data.shuffle !== undefined && Date.now() - SHUF.touchedAt > 2500) {
-        paintShuffle(data.shuffle);
-      }
-      // Artwork comes from Sonos in the same response. It must NOT come from
-      // /album_tracks: that endpoint writes to the shared numbered-results
-      // slot, so polling it for artwork silently replaced whatever the user
-      // had just searched for, and "queue number 1" then queued the wrong
-      // track entirely.
-      if (data.artwork) document.getElementById('art').src = data.artwork;
-      syncSeek(data);
-    }).catch(() => {});
+    fetch('/nowplaying').then(r => r.json()).then(paintNowPlaying).catch(() => {});
   }
 
   // The 10-second poll would otherwise yank the slider back to a value Sonos
@@ -1731,12 +1736,55 @@
     if (e.key === 'Escape' && EDITOR) closeEditor();
   });
 
+  // ---- Live updates -----------------------------------------------------
+  // The player used to poll /nowplaying every 10s per open tab, which was
+  // about 90% of all traffic and still left the UI up to 10s stale. The server
+  // now pushes when Sonos actually changes something. The poll stays as a
+  // fallback -- an EventSource can fail for reasons the page cannot fix (the
+  // stream client cap, a tunnel that drops long-lived connections), and a
+  // silent player is worse than a chatty one.
+  let SLOW_POLL = null;
+
+  function startFallbackPolling() {
+    if (SLOW_POLL) return;
+    SLOW_POLL = setInterval(refreshNowPlaying, 10000);
+  }
+
+  function stopFallbackPolling() {
+    if (!SLOW_POLL) return;
+    clearInterval(SLOW_POLL);
+    SLOW_POLL = null;
+  }
+
+  function connectStream() {
+    if (!window.EventSource) { startFallbackPolling(); return; }
+
+    const source = new EventSource('/stream');
+
+    source.onmessage = event => {
+      // A pushed payload is the same shape /nowplaying returns, so it goes
+      // through exactly the same painting path rather than a second one.
+      try { paintNowPlaying(JSON.parse(event.data)); }
+      catch (err) { console.error('bad stream payload', err); }
+    };
+
+    source.onopen = () => stopFallbackPolling();
+
+    source.onerror = () => {
+      // EventSource reconnects on its own, but only while the server is
+      // reachable and under the client cap. Poll until a message proves the
+      // stream is really back.
+      startFallbackPolling();
+    };
+  }
+
   // ---- Boot -------------------------------------------------------------
   applyTheme(currentTheme());
   refreshNowPlaying();
   loadQueue();
   loadSchedules();
-  setInterval(refreshNowPlaying, 10000);
+  connectStream();
+  startFallbackPolling();   // dropped as soon as the stream opens
   setInterval(paintSeek, 1000);
 </script>
 </body>

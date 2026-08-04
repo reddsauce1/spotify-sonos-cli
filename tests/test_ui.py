@@ -317,7 +317,7 @@ class TestTracksAddressedByUri:
 
         Scoped to the poll: expanding an album in the search results is a
         legitimate, user-initiated call to the same endpoint."""
-        poll = markup.split("function refreshNowPlaying(", 1)[1].split("\n  }", 1)[0]
+        poll = markup.split("function paintNowPlaying(", 1)[1].split("\n  }", 1)[0]
         # A call, not the word: the comment inside this function explains the
         # rule and names the endpoint.
         assert "fetch('/album_tracks" not in poll
@@ -330,7 +330,7 @@ class TestTracksAddressedByUri:
         assert "album_tracks" in expand
 
     def test_artwork_comes_from_nowplaying(self, markup):
-        np = markup.split("function refreshNowPlaying(", 1)[1].split("\n  }", 1)[0]
+        np = markup.split("function paintNowPlaying(", 1)[1].split("\n  }", 1)[0]
         assert "data.artwork" in np
 
 
