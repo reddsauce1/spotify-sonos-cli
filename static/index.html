@@ -441,6 +441,16 @@
     margin: 5px 0 0 8px; letter-spacing: .02em;
   }
   .next-run.warn { color: var(--accent-2); }
+  /* A routine that silently did nothing is the failure this whole feature
+     exists to prevent, so it gets stated on the card rather than left in the
+     log. Reuses accent-2 -- the same colour the never-runs warning uses -- so
+     "something here needs looking at" reads the same way in both places. */
+  .step.failed .what { color: var(--accent-2); }
+  .last-error {
+    font-family: var(--mono); font-size: 11px; color: var(--accent-2);
+    margin: 4px 0 0 8px; letter-spacing: .02em;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
   .toast {
     position: fixed; left: 50%; transform: translateX(-50%);
     bottom: calc(84px + env(safe-area-inset-bottom)); z-index: 60;
@@ -1368,13 +1378,18 @@
 
   function renderRoutine(s) {
     const steps = (s.steps || []).map(step =>
-      '<div class="step">' +
+      '<div class="step' + (step.last_error ? ' failed' : '') + '">' +
         '<span class="off">' + escapeHtml(step.at || s.time) + '</span>' +
-        '<span>' + escapeHtml(ACTION_ICON[step.action] || '•') + '</span>' +
+        '<span>' + escapeHtml(step.last_error ? '⚠' : (ACTION_ICON[step.action] || '•')) + '</span>' +
         '<span class="what">' + escapeHtml(describeStep(step)) +
           (step.next_day ? ' · next day' : '') + '</span>' +
       '</div>'
     ).join('') || '<div class="step"><span class="what">no steps</span></div>';
+
+    // The server records last_error per step; without this the only trace of
+    // a wake-up that did nothing was a line in a rotating log nobody reads.
+    const failed = (s.steps || []).filter(step => step.last_error);
+    const failure = failed.length ? describeFailure(failed) : '';
 
     // The absence of this line is how a wake-up alarm sat on Sunday-only
     // without anyone noticing.
@@ -1394,9 +1409,33 @@
         '<button class="abtn" title="Delete" onclick="deleteSchedule(\'' + s.id + '\')">🗑</button>' +
       '</div>' +
       '<div class="steps">' + steps + '</div>' +
+      (failure ? '<div class="last-error">' + escapeHtml(failure) + '</div>' : '') +
       '<div class="next-run' + (s.next_run || !s.enabled ? '' : ' warn') + '">' +
         escapeHtml(when) + '</div>' +
     '</div>';
+  }
+
+  // Says which day it failed, because "it failed" about a routine that runs
+  // every morning is not enough to know whether to care.
+  function describeFailure(failed) {
+    const worst = failed.find(step => step.last_error.final) || failed[0];
+    const err = worst.last_error;
+    const when = err.date ? describeDay(err.date) : 'recently';
+    const detail = err.final
+      ? 'gave up after ' + err.attempts + (err.attempts === 1 ? ' try' : ' tries')
+      : 'failed';
+    return '⚠ ' + when + ': ' + detail + ' — ' + (err.message || 'unknown error');
+  }
+
+  function describeDay(iso) {
+    const today = new Date();
+    const pad = n => String(n).padStart(2, '0');
+    const asLocal = d => d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate());
+    if (iso === asLocal(today)) return 'today';
+    const yesterday = new Date(today);
+    yesterday.setDate(today.getDate() - 1);
+    if (iso === asLocal(yesterday)) return 'yesterday';
+    return iso;
   }
 
   // ---- Routine editor ---------------------------------------------------

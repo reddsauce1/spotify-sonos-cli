@@ -16,6 +16,11 @@ _FAKE_CONFIG = {
     "sonos_room": "TestRoom",
     "anthropic_api_key": "fake_key",
     "ui_password": "",
+    # The suite deliberately runs open -- test_auth relies on the empty
+    # password short-circuiting _is_authenticated. Since an empty credential
+    # is now a boot failure unless it is an explicit choice, the fake config
+    # has to make that choice explicitly too.
+    "allow_open_access": True,
 }
 
 

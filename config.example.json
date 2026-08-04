@@ -4,5 +4,6 @@
     "sonos_room": "YOUR_SONOS_ROOM_NAME",
     "anthropic_api_key": "YOUR_ANTHROPIC_API_KEY",
     "ui_password": "SET_THIS_OR_THE_SERVER_RUNS_UNAUTHENTICATED",
-    "cli_token": "GENERATE_WITH: python3 -c 'import secrets; print(secrets.token_hex(32))'"
+    "cli_token": "GENERATE_WITH: python3 -c 'import secrets; print(secrets.token_hex(32))'",
+    "allow_open_access": false
 }

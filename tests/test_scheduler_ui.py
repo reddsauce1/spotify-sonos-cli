@@ -6,7 +6,10 @@ step after that -- no way to edit anything once created, offsets shown as
 "+75m", and no indication anywhere of when a routine would next fire. The
 last of those is how a wake-up alarm ran Sunday-only for weeks unnoticed.
 """
+import json
 import re
+import shutil
+import subprocess
 
 import pytest
 
@@ -305,3 +308,104 @@ class TestATitleCannotBreakOutOfTheHandler:
         from urllib.parse import unquote
         for name in ["Livin' on a Prayer", "Rock 'n' Roll", 'He said "hi"']:
             assert unquote(self._encode_like_js(name)) == name
+
+
+class TestAFailedRoutineIsVisible:
+    """A routine that quietly did nothing used to leave its only trace in a
+    rotating log. The server records last_error per step; the point of these
+    is that the card actually says so."""
+
+    def test_a_failed_step_is_marked(self, js):
+        assert "step.last_error ? ' failed' : ''" in js
+
+    def test_a_failed_step_swaps_its_icon_for_a_warning(self, js):
+        assert "step.last_error ? '⚠'" in js
+
+    def test_the_card_carries_the_failure(self, js):
+        assert "class=\"last-error\"" in js
+        assert "describeFailure" in js
+
+    def test_the_failure_text_is_escaped(self, js):
+        """The message travels from Sonos through the server into innerHTML."""
+        assert "escapeHtml(failure)" in js
+
+    def test_the_styling_reuses_the_existing_warning_colour(self, css):
+        """'Something here needs looking at' should read the same way as the
+        never-runs warning does."""
+        assert ".last-error {" in css
+        block = css.split(".last-error {", 1)[1].split("}", 1)[0]
+        assert "var(--accent-2)" in block
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node not installed")
+class TestFailureWording:
+    """Run the real helpers rather than trusting a grep."""
+
+    @staticmethod
+    def _describe(failed, today="2026-08-04"):
+        with open(INDEX_HTML) as handle:
+            markup = handle.read()
+
+        def grab(name):
+            start = markup.index("function " + name + "(")
+            line_start = markup.rfind("\n", 0, start) + 1
+            indent = markup[line_start:start]
+            close = markup.index("\n" + indent + "}", start)
+            return markup[line_start:close + len(indent) + 2]
+
+        script = (
+            # Assigned through globalThis rather than declared: `class Date`
+            # in this scope would put the name in the temporal dead zone and
+            # `const RealDate = Date` above it would throw.
+            "const RealDate = Date;\n"
+            "globalThis.Date = class extends RealDate {\n"
+            "  constructor(...a) { super(...(a.length ? a : ['" + today + "T12:00:00'])); }\n"
+            "};\n"
+            + grab("describeDay") + "\n"
+            + grab("describeFailure") + "\n"
+            "console.log(JSON.stringify(describeFailure("
+            + json.dumps(failed) + ")));"
+        )
+        out = subprocess.run(["node", "-e", script], capture_output=True, text=True, timeout=30)
+        assert out.returncode == 0, out.stderr
+        return json.loads(out.stdout)
+
+    def test_it_names_the_day_and_the_reason(self):
+        text = self._describe([{"last_error": {
+            "date": "2026-08-04", "message": "Sonos request timed out",
+            "attempts": 1, "final": False}}])
+        assert "today" in text
+        assert "Sonos request timed out" in text
+
+    def test_yesterday_reads_as_yesterday(self):
+        """A wake-up that failed this morning and one that failed last week
+        deserve different reactions."""
+        text = self._describe([{"last_error": {
+            "date": "2026-08-03", "message": "boom", "attempts": 1, "final": False}}])
+        assert "yesterday" in text
+
+    def test_an_older_failure_keeps_its_date(self):
+        text = self._describe([{"last_error": {
+            "date": "2026-07-30", "message": "boom", "attempts": 1, "final": False}}])
+        assert "2026-07-30" in text
+
+    def test_giving_up_is_said_plainly(self):
+        text = self._describe([{"last_error": {
+            "date": "2026-08-04", "message": "boom", "attempts": 3, "final": True}}])
+        assert "gave up after 3 tries" in text
+
+    def test_one_try_is_not_pluralised(self):
+        text = self._describe([{"last_error": {
+            "date": "2026-08-04", "message": "boom", "attempts": 1, "final": True}}])
+        assert "1 try" in text
+
+    def test_the_final_failure_wins_over_a_retryable_one(self):
+        """Two failed steps, one still retrying and one that gave up -- the
+        one that gave up is the one worth reporting."""
+        text = self._describe([
+            {"last_error": {"date": "2026-08-04", "message": "still trying",
+                            "attempts": 1, "final": False}},
+            {"last_error": {"date": "2026-08-04", "message": "gave up here",
+                            "attempts": 3, "final": True}},
+        ])
+        assert "gave up here" in text

@@ -287,18 +287,18 @@ class TestDoVolume:
             assert dj._do_volume(level=50) == err
 
     def test_volume_change_reports_where_it_landed(self, dj):
-        """Two calls: the change, then a state read. A caller nudging by one
-        cannot see the result otherwise."""
+        """One call now: the speaker applies the adjustment and returns where
+        it settled, so there is no second state read to go stale."""
         with patch.object(dj, "_sonos_request",
-                          side_effect=[{"ok": True}, {"volume": 30}]) as sonos:
+                          return_value={"status": "success", "newVolume": 30}) as sonos:
             result = dj._do_volume(change="+10")
-        assert sonos.call_args_list[0].args == ("volume/+10",)
+        assert sonos.call_args_list[0].args == ("relvolume/+10",)
         assert result == {"status": "volume adjusted", "change": "+10", "level": 30}
 
-    def test_volume_change_omits_level_when_state_has_none(self, dj):
+    def test_volume_change_omits_level_when_the_speaker_reports_none(self, dj):
         """A null level is worse than no level -- it reads as a real value."""
         with patch.object(dj, "_sonos_request",
-                          side_effect=[{"ok": True}, {"playbackState": "PLAYING"}]):
+                          return_value={"status": "success", "newVolume": None}):
             assert "level" not in dj._do_volume(change="+10")
 
     def test_volume_change_error(self, dj):

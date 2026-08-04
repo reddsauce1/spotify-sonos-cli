@@ -179,6 +179,21 @@ def _validate_config():
         if value is not None and not isinstance(value, str):
             problems.append(f"  {key}: must be a string, got {type(value).__name__}")
 
+    # These were optional, and an empty ui_password only logged a warning at
+    # startup. That is the wrong default for something published to the
+    # internet through a Cloudflare tunnel: forgetting a key and deciding to
+    # run without authentication produced exactly the same result, and only
+    # one of them is a decision. Running open is still allowed -- it just has
+    # to be written down rather than arrived at by omission.
+    if not config.get('allow_open_access'):
+        for key in ('ui_password', 'cli_token'):
+            value = config.get(key)
+            if not isinstance(value, str) or not value.strip():
+                problems.append(
+                    f"  {key}: missing or empty -- set it, or set"
+                    ' "allow_open_access": true to run with no authentication'
+                )
+
     if problems:
         sys.stderr.write(
             f"config.json at {config_path} is not usable:\n"
@@ -2305,18 +2320,24 @@ class DJServer:
             return {"status": "volume set", "level": level}
         elif change:
             change = _validate_volume_change(change)
-            result = self._sonos_request(f"volume/{change}")
+            # relvolume, not volume/+N. The shipped action resolves the sign in
+            # JavaScript against a cached volume; that was not observed to lose
+            # updates (node is single-threaded and updates the cache before the
+            # SOAP call), but letting the speaker apply the delta removes the
+            # cached value from the story entirely and returns where it landed,
+            # which saves the follow-up state read below.
+            # See sonos-actions/relvolume.js for the measurements.
+            result = self._sonos_request(f"relvolume/{change}")
             if "error" in result:
                 return result
             # Report where it landed, not just what was asked for. A caller
             # nudging by one has no way to know the result otherwise, and it
             # differs from the arithmetic whenever Sonos clamps at 0 or 100
-            # or something else moved the volume in between. Unlike play mode,
-            # volume in /state is current immediately after the change.
+            # or something else moved the volume in between. The speaker
+            # returns this, so it costs no extra round trip.
             payload = {"status": "volume adjusted", "change": change}
-            state = self._sonos_request("state")
-            if "error" not in state and state.get('volume') is not None:
-                payload["level"] = state.get('volume')
+            if result.get('newVolume') is not None:
+                payload["level"] = result['newVolume']
             return payload
         else:
             result = self._sonos_request("state")
@@ -2758,7 +2779,11 @@ if __name__ == '__main__':
         "configured" if claude else "disabled (no api key)",
     )
     if not UI_PASSWORD:
-        log.warning("ui_password is empty -- every endpoint is reachable without credentials")
+        # Reaching here now means allow_open_access was set deliberately, so
+        # this records a choice rather than reporting an accident.
+        log.warning(
+            "ui_password is empty and allow_open_access is set -- "
+            "every endpoint is reachable without credentials")
 
     log.info("Loaded %d schedule(s) from %s", len(_schedules), SCHEDULES_PATH)
 

@@ -44,24 +44,24 @@ class TestARelativeChangeReportsWhereItLanded:
 
     def test_the_resulting_level_comes_back(self, dj):
         with patch.object(dj, "_sonos_request",
-                          side_effect=[{"ok": True}, {**STATE, "volume": 17}]):
+                          return_value={"status": "success", "newVolume": 17}):
             assert dj._do_volume(change="+1")["level"] == 17
 
     def test_it_reports_the_clamped_value_not_the_arithmetic(self, dj):
         """+5 from 98 lands on 100, and the UI must show 100."""
         with patch.object(dj, "_sonos_request",
-                          side_effect=[{"ok": True}, {**STATE, "volume": 100}]):
+                          return_value={"status": "success", "newVolume": 100}):
             assert dj._do_volume(change="+5")["level"] == 100
 
     def test_the_change_is_still_reported(self, dj):
         with patch.object(dj, "_sonos_request",
-                          side_effect=[{"ok": True}, STATE]):
+                          return_value={"status": "success", "newVolume": 15}):
             assert dj._do_volume(change="-1")["change"] == "-1"
 
-    def test_a_failed_state_read_does_not_lose_the_change(self, dj):
+    def test_an_unreported_level_does_not_lose_the_change(self, dj):
         """The volume did move; only the confirmation is missing."""
         with patch.object(dj, "_sonos_request",
-                          side_effect=[{"ok": True}, {"error": "down", "endpoint": "state"}]):
+                          return_value={"status": "success", "newVolume": None}):
             result = dj._do_volume(change="+1")
         assert result["status"] == "volume adjusted"
         assert "level" not in result
@@ -254,3 +254,56 @@ class TestTheNumberDoesNotShoveTheSlider:
     def test_the_buttons_do_not_shrink(self, css):
         rule = re.search(r"\.vbtn \{([^}]*)\}", css, re.S).group(1)
         assert "flex: none" in rule
+
+
+class TestRelativeVolumeIsAppliedBySpeaker:
+    """node's own `volume` action resolves "+3" in JavaScript against a cached
+    volume and writes an absolute value.
+
+    That read-modify-write was NOT observed to lose updates -- five concurrent
+    nudges moved the volume by five -- because node is single-threaded and
+    updates its cache before the SOAP call. relvolume is kept for the two
+    things that are demonstrable: the speaker applies the delta, so no cached
+    value participates at all, and it returns where it landed, which removes
+    the second round trip.
+    """
+
+    def test_it_uses_the_speaker_applied_endpoint(self, dj):
+        with patch.object(dj, "_sonos_request",
+                          return_value={"status": "success", "newVolume": 21}) as sonos:
+            dj._do_volume(change="+1")
+        endpoint = sonos.call_args_list[0].args[0]
+        assert endpoint == "relvolume/+1"
+        assert not endpoint.startswith("volume/")
+
+    def test_an_absolute_set_still_uses_the_plain_endpoint(self, dj):
+        """Absolute writes were never racey; only the read-modify-write was."""
+        with patch.object(dj, "_sonos_request", return_value={"ok": True}) as sonos:
+            dj._do_volume(level=20)
+        sonos.assert_called_once_with("volume/20")
+
+    def test_it_costs_one_round_trip_not_two(self, dj):
+        """The speaker returns where it landed, so the follow-up state read
+        that used to confirm it is gone."""
+        with patch.object(dj, "_sonos_request",
+                          return_value={"status": "success", "newVolume": 21}) as sonos:
+            dj._do_volume(change="+1")
+        assert sonos.call_count == 1
+
+    def test_the_sign_is_preserved_for_the_speaker(self, dj):
+        with patch.object(dj, "_sonos_request",
+                          return_value={"status": "success", "newVolume": 5}) as sonos:
+            dj._do_volume(change="-3")
+        assert sonos.call_args_list[0].args[0] == "relvolume/-3"
+
+    def test_the_custom_action_ships_with_the_repo(self):
+        """relvolume is not upstream. If the file is missing from
+        sonos-actions/, a fresh install silently loses relative volume."""
+        import os
+        from paths import SERVER_PY
+        action = os.path.join(os.path.dirname(SERVER_PY), "sonos-actions", "relvolume.js")
+        assert os.path.isfile(action)
+        with open(action) as handle:
+            source = handle.read()
+        assert "registerAction('relvolume'" in source
+        assert "SetRelativeVolume" in source

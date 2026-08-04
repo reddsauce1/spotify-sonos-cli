@@ -87,8 +87,11 @@ class TestConfigValidation:
                 capture_output=True, text=True, cwd=HERE, timeout=60,
             )
 
+    VALID = {"client_id": "a", "client_secret": "b",
+             "ui_password": "hunter2", "cli_token": "t" * 64}
+
     def test_valid_config_imports(self):
-        out = self._import_with_config({"client_id": "a", "client_secret": "b"})
+        out = self._import_with_config(dict(self.VALID))
         assert "IMPORTED" in out.stdout, out.stderr
 
     @pytest.mark.parametrize("cfg", [
@@ -107,17 +110,59 @@ class TestConfigValidation:
         out = self._import_with_config({"client_id": "a"})
         assert "client_secret" in out.stderr
 
-    def test_optional_keys_may_be_absent(self):
-        """anthropic_api_key, ui_password etc. are optional by design."""
-        out = self._import_with_config({"client_id": "a", "client_secret": "b"})
+    def test_truly_optional_keys_may_be_absent(self):
+        """anthropic_api_key and sonos_room are still optional by design --
+        one disables /chat, the other has a default."""
+        out = self._import_with_config(dict(self.VALID))
         assert "IMPORTED" in out.stdout, out.stderr
 
     def test_wrong_type_on_optional_key_is_rejected(self):
-        out = self._import_with_config(
-            {"client_id": "a", "client_secret": "b", "ui_password": 1234}
-        )
+        out = self._import_with_config({**self.VALID, "ui_password": 1234})
         assert out.returncode != 0
         assert "ui_password" in out.stderr
+
+
+class TestItRefusesToRunOpenByAccident:
+    """This reverses an earlier decision. ui_password and cli_token used to be
+    optional, and an empty password only logged a warning -- so forgetting a
+    key and choosing to run unauthenticated produced the same result, on
+    something published to the internet through a Cloudflare tunnel. Only one
+    of those is a decision, so now it has to be written down."""
+
+    # staticmethod(), or the borrowed helper picks up `self` as its config.
+    _import_with_config = staticmethod(TestConfigValidation._import_with_config)
+
+    @pytest.mark.parametrize("missing", ["ui_password", "cli_token"])
+    def test_a_missing_credential_stops_the_boot(self, missing):
+        cfg = dict(TestConfigValidation.VALID)
+        del cfg[missing]
+        out = self._import_with_config(cfg)
+        assert out.returncode != 0, out.stdout
+        assert missing in out.stderr
+
+    @pytest.mark.parametrize("empty", ["", "   "])
+    def test_an_empty_credential_stops_the_boot(self, empty):
+        out = self._import_with_config({**TestConfigValidation.VALID, "ui_password": empty})
+        assert out.returncode != 0, out.stdout
+
+    def test_the_error_says_how_to_opt_out(self):
+        """A refusal that does not say what to do next just gets worked around
+        by deleting the check."""
+        cfg = dict(TestConfigValidation.VALID)
+        del cfg["ui_password"]
+        out = self._import_with_config(cfg)
+        assert "allow_open_access" in out.stderr
+
+    def test_open_access_is_allowed_when_asked_for(self):
+        out = self._import_with_config(
+            {"client_id": "a", "client_secret": "b", "allow_open_access": True})
+        assert "IMPORTED" in out.stdout, out.stderr
+
+    def test_the_flag_alone_does_not_excuse_real_credentials(self):
+        """allow_open_access covers authentication, not Spotify."""
+        out = self._import_with_config({"allow_open_access": True})
+        assert out.returncode != 0
+        assert "client_id" in out.stderr
 
 
 class TestSearchResultExpiry:
