@@ -119,6 +119,7 @@ def _never_touch_real_data(monkeypatch, tmp_path):
     # next test is trying to make.
     monkeypatch.setattr(server_module, "_content_loads", {})
     monkeypatch.setattr(server_module, "_stream_clients", [])
+    monkeypatch.setattr(server_module, "_art_origin", None)
     yield
 
 

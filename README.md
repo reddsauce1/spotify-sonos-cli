@@ -168,6 +168,7 @@ dj help
 | `/health` | Sonos + Spotify reachability; 503 if either is down. Sonos counts as healthy only if it reports discovered speakers, not merely a 200 |
 | `/metrics` | Counters since process start: call volume, failures, transport and content latency, schedule fires, stream clients. Makes no upstream call |
 | `/stream` | Server-sent events; pushes the now-playing payload whenever Sonos changes something |
+| `/albumart` | The current track's cover, proxied from the speaker. Sonos serves art over plain HTTP on a private address, which the browser blocks as mixed content once the UI is behind the tunnel |
 | `/sonos_event` | Where node-sonos-http-api posts its change notifications (POST). Authenticated with the same `X-DJ-Token` |
 | `/schedules` | List scheduled actions |
 | `/schedule_save` | Create or replace a whole routine, steps included (POST, JSON body) |

@@ -357,6 +357,12 @@ STREAM_HEARTBEAT_SECONDS = _setting('stream_heartbeat_seconds')
 # a queue until the process dies. It drops events and resyncs on reconnect.
 _stream_clients = []
 _stream_lock = threading.Lock()
+
+# Origin of the speaker currently serving album art, learned from the artwork
+# URL Sonos hands back. Remembered rather than passed through the browser so
+# /albumart can only ever fetch from the speaker -- see _proxied_art.
+_art_origin = None
+_art_lock = threading.Lock()
 SONOS_READINESS_TIMEOUT = _setting('sonos_readiness_timeout')
 
 # Named because the dedupe below has to tell an ambiguous failure from a
@@ -738,6 +744,35 @@ def _fire_schedule(dj, entry):
 
     log.info("Schedule %r ran %s", label, action)
     return True, None
+
+
+def _proxied_art(url):
+    """Rewrite the speaker's artwork URL to a same-origin path.
+
+    Sonos serves art from http://<speaker-ip>:1400/getaa?... Handing that to
+    the browser only works from a machine on the LAN looking at the UI over
+    plain HTTP. Through the tunnel the page is HTTPS, so the browser blocks a
+    plain-HTTP subresource as mixed content and the player shows no art at
+    all; from off the LAN the address is not routable either way.
+
+    The origin is remembered here rather than round-tripped through the query
+    string. /albumart therefore has no way to be pointed at an arbitrary host,
+    which an endpoint that fetches a caller-supplied URL would.
+    """
+    if not url:
+        return ''
+    parts = urllib.parse.urlsplit(url)
+    if parts.scheme not in ('http', 'https') or not parts.netloc:
+        return url
+    if parts.path != '/getaa':
+        # Some other artwork shape; pass it through rather than proxy a path
+        # this endpoint does not know how to rebuild.
+        return url
+
+    global _art_origin
+    with _art_lock:
+        _art_origin = f"{parts.scheme}://{parts.netloc}"
+    return f"/albumart?{parts.query}" if parts.query else "/albumart"
 
 
 def _broadcast(payload):
@@ -1660,6 +1695,42 @@ class DJServer:
     stream._cp_config = {'response.stream': True}
 
     @cherrypy.expose
+    def albumart(self, **_):
+        """Serve the current track's artwork from the speaker, same-origin.
+
+        Not json_out: this returns image bytes. Not public either -- it goes
+        through the same auth as everything else, which works because a same
+        origin <img> carries the session cookie.
+
+        The query string is passed through, but the host and path are not: the
+        URL is rebuilt from the origin last seen in a Sonos artwork field, so
+        the worst a caller can do is ask the speaker for a different image.
+        """
+        with _art_lock:
+            origin = _art_origin
+        if not origin:
+            raise cherrypy.HTTPError(404, "no artwork source known yet")
+
+        url = f"{origin}/getaa"
+        if cherrypy.request.query_string:
+            url += f"?{cherrypy.request.query_string}"
+
+        try:
+            response = requests.get(url, timeout=SONOS_TIMEOUT)
+        except requests.exceptions.RequestException as exc:
+            raise cherrypy.HTTPError(502, f"could not fetch artwork: {exc.__class__.__name__}")
+        if response.status_code != 200:
+            raise cherrypy.HTTPError(502, f"artwork returned HTTP {response.status_code}")
+
+        cherrypy.response.headers['Content-Type'] = \
+            response.headers.get('Content-Type', 'image/jpeg')
+        # The URL carries the track, so it changes when the track does. A year
+        # is safe and means the browser asks once per track rather than on
+        # every push -- and pushes now arrive on every volume nudge.
+        cherrypy.response.headers['Cache-Control'] = 'private, max-age=31536000'
+        return response.content
+
+    @cherrypy.expose
     @cherrypy.tools.json_out()
     def metrics(self):
         """Counters since process start.
@@ -2397,7 +2468,7 @@ class DJServer:
             # Spotify for it. That matters beyond saving a call: album_tracks
             # writes to the shared numbered-results slot, so polling it for
             # artwork silently changed what "play number 3" referred to.
-            "artwork": track.get('absoluteAlbumArtUri', ''),
+            "artwork": _proxied_art(track.get('absoluteAlbumArtUri', '')),
             "uri": track.get('uri', ''),
             # Both in whole seconds. A client polling every few seconds has to
             # tick between polls to look right, so it needs the raw numbers

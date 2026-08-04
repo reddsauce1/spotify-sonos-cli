@@ -347,7 +347,10 @@ class TestNowPlayingCarriesArtwork:
         }
         with patch.object(dj, "_sonos_request", return_value=state):
             result = dj._do_nowplaying()
-        assert result["artwork"] == "http://192.168.8.134:1400/getaa?x"
+        # Rewritten to a same-origin path -- the speaker's own URL is plain
+        # HTTP on a private address, which the browser blocks as mixed content
+        # once the UI is served over the tunnel. See test_album_art.py.
+        assert result["artwork"] == "/albumart?x"
         assert result["uri"].startswith("x-sonos-spotify")
 
     def test_missing_artwork_is_empty_not_absent(self, dj, server_mod):
