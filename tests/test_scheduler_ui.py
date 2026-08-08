@@ -110,7 +110,10 @@ class TestStepsShowWallClockNotOffsets:
         assert "'m'" not in routine, "no leftover +75m rendering"
 
     def test_times_convert_back_to_offsets_on_save(self, js):
-        assert "offset: ((toMinutes(step.at) - trigger) % 1440 + 1440) % 1440" in js
+        assert "offset: stepOffset(step.at, trigger)" in js
+        body = re.search(r"function stepOffset\(at, triggerMinutes\) \{.*?\n  \}",
+                         js, re.S).group(0)
+        assert "% 1440 + 1440) % 1440" in body
 
     def test_a_step_before_the_trigger_is_marked_next_day(self, js):
         assert "const wraps = toMinutes(step.at) < toMinutes(EDITOR.time);" in js
@@ -121,6 +124,100 @@ class TestStepsShowWallClockNotOffsets:
         body = re.search(r"function editorTimeChanged\(value\) \{.*?\n  \}", js, re.S).group(0)
         assert "const delta = toMinutes(value) - toMinutes(EDITOR.time);" in body
         assert "step.at = fromMinutes(toMinutes(step.at) + delta)" in body
+
+
+class TestAStepEarlierThanTheStartReanchors:
+    """Setting a step to 06:00 in a routine anchored at 07:00 used to wrap it
+    to 06:00 *next day* -- offset 1380, which the server then rejected at its
+    720-minute cap with a bare "offset must be between 0 and 720". The editor
+    now reads a time more than 12h "after" the start as "this routine starts
+    earlier" and moves the start back to it instead."""
+
+    def test_the_cap_matches_the_server(self, js):
+        """The JS constant mirrors max_step_offset_minutes; if the server's
+        cap moves, this is the drift alarm."""
+        import server
+        cap = int(re.search(r"const MAX_STEP_OFFSET_MIN = (\d+);", js).group(1))
+        assert cap == server.MAX_OFFSET_MINUTES
+
+    def test_the_save_guard_speaks_plainly(self, js):
+        """If a draft still exceeds the cap, the toast should explain it in
+        hours, not surface the server's offset-range 400."""
+        body = re.search(r"function saveEditor\(\) \{.*?\n  \}", js, re.S).group(0)
+        assert "Steps span more than 12 hours" in body
+        assert re.search(r"showToast\('❌ Steps span[^']*'\);\s*return;", body)
+
+    def test_reanchoring_does_not_go_through_editorTimeChanged(self, js):
+        """editorTimeChanged shifts every step along with the start -- the
+        right gesture for 'move my wake-up 30 minutes', the wrong one for
+        'this one step is earlier'."""
+        body = re.search(r"function editorStepField\(index, field, value\) \{.*?\n  \}",
+                         js, re.S).group(0)
+        assert "EDITOR.time = value;" in body
+        assert "editorTimeChanged(" not in body
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node not installed")
+class TestReanchorBehaviour:
+    """Run the real editorStepField rather than trusting a grep."""
+
+    @staticmethod
+    def _edit_step_at(editor, index, value):
+        with open(INDEX_HTML) as handle:
+            markup = handle.read()
+
+        def grab(name):
+            start = markup.index("function " + name + "(")
+            line_start = markup.rfind("\n", 0, start) + 1
+            indent = markup[line_start:start]
+            close = markup.index("\n" + indent + "}", start)
+            return markup[line_start:close + len(indent) + 2]
+
+        def grab_const(name):
+            return re.search(r"const %s = [^\n]+;" % name, markup).group(0)
+
+        script = (
+            "function renderEditor() {}\n"
+            "let EDITOR = " + json.dumps(editor) + ";\n"
+            + grab_const("HHMM_RE") + "\n"
+            + grab_const("MAX_STEP_OFFSET_MIN") + "\n"
+            + grab("toMinutes") + "\n"
+            + grab("stepOffset") + "\n"
+            + grab("editorStepField") + "\n"
+            + "editorStepField(%d, 'at', %s);\n" % (index, json.dumps(value))
+            + "console.log(JSON.stringify(EDITOR));"
+        )
+        out = subprocess.run(["node", "-e", script], capture_output=True, text=True, timeout=30)
+        assert out.returncode == 0, out.stderr
+        return json.loads(out.stdout)
+
+    def _editor(self, time, ats):
+        return {"id": None, "label": "", "time": time,
+                "days": [0, 1, 2, 3, 4], "enabled": True,
+                "steps": [{"at": at, "action": "play", "uri": "", "volume": ""}
+                          for at in ats]}
+
+    def test_an_earlier_step_pulls_the_start_back(self):
+        after = self._edit_step_at(self._editor("07:00", ["07:00", "07:00"]), 1, "06:00")
+        assert after["time"] == "06:00"
+        assert after["steps"][1]["at"] == "06:00"
+
+    def test_the_other_steps_keep_their_wall_clock_times(self):
+        """The whole point of bypassing editorTimeChanged: pulling one step
+        earlier must not drag a 07:00 step back to 06:00 with it."""
+        after = self._edit_step_at(self._editor("07:00", ["07:00", "07:00"]), 1, "06:00")
+        assert after["steps"][0]["at"] == "07:00"
+
+    def test_a_genuine_past_midnight_step_is_left_alone(self):
+        """23:45 start with a 00:15 step wraps by 30 minutes -- well under
+        the cap, so it stays a next-day step and the start does not move."""
+        after = self._edit_step_at(self._editor("23:45", ["23:45"]), 0, "00:15")
+        assert after["time"] == "23:45"
+        assert after["steps"][0]["at"] == "00:15"
+
+    def test_a_step_within_the_cap_does_not_reanchor(self):
+        after = self._edit_step_at(self._editor("07:00", ["07:00"]), 0, "19:00")
+        assert after["time"] == "07:00"
 
 
 class TestNextRunIsAlwaysVisible:

@@ -625,8 +625,15 @@
   const FULL_DAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday',
                      'Friday', 'Saturday', 'Sunday'];
   const HHMM_RE = /^([01]\d|2[0-3]):([0-5]\d)$/;
+  // Mirrors max_step_offset_minutes on the server: a step can sit at most 12
+  // hours after the routine's start time. Beyond that the save would 400.
+  const MAX_STEP_OFFSET_MIN = 720;
 
   function toMinutes(hhmm) { return (+hhmm.slice(0, 2)) * 60 + (+hhmm.slice(3, 5)); }
+  // Minutes from the routine's start to `at`, wrapping forward past midnight.
+  function stepOffset(at, triggerMinutes) {
+    return ((toMinutes(at) - triggerMinutes) % 1440 + 1440) % 1440;
+  }
   function fromMinutes(m) {
     m = ((m % 1440) + 1440) % 1440;
     return String(Math.floor(m / 60)).padStart(2, '0') + ':' +
@@ -1555,6 +1562,17 @@
 
   function editorStepField(index, field, value) {
     EDITOR.steps[index][field] = value;
+    // A step time more than 12h "after" the start can only be meant as
+    // earlier the same day (the server caps offsets at MAX_STEP_OFFSET_MIN),
+    // so pull the start time back to it instead of tagging it "next day" and
+    // letting the save fail. Set EDITOR.time directly -- editorTimeChanged
+    // would shift every other step along with it, which is the opposite of
+    // what "this one step is earlier" means. Genuine past-midnight steps
+    // (23:45 start, 00:15 step) wrap by well under 12h and are left alone.
+    if (field === 'at' && HHMM_RE.test(value) &&
+        stepOffset(value, toMinutes(EDITOR.time)) > MAX_STEP_OFFSET_MIN) {
+      EDITOR.time = value;
+    }
     renderEditor();
   }
 
@@ -1661,6 +1679,14 @@
 
   function saveEditor() {
     const trigger = toMinutes(EDITOR.time);
+    // Re-anchoring in editorStepField should make this unreachable, but if a
+    // step still lands past the server's offset cap, fail here in plain
+    // words rather than surfacing the server's "offset must be between 0 and
+    // 720" 400.
+    if (EDITOR.steps.some(step => stepOffset(step.at, trigger) > MAX_STEP_OFFSET_MIN)) {
+      showToast('❌ Steps span more than 12 hours — split this into two routines');
+      return;
+    }
     const payload = {
       time: EDITOR.time,
       days: EDITOR.days,
@@ -1668,7 +1694,7 @@
       enabled: EDITOR.enabled,
       steps: EDITOR.steps.map(step => {
         const out = {
-          offset: ((toMinutes(step.at) - trigger) % 1440 + 1440) % 1440,
+          offset: stepOffset(step.at, trigger),
           action: step.action,
         };
         if (step.uri) out.uri = step.uri;
