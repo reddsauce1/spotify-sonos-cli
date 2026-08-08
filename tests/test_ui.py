@@ -166,72 +166,169 @@ class TestJavaScriptIsValid:
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node not installed")
 class TestWeeklyCalendar:
-    """The calendar is rendered client-side from /schedules."""
+    """The week grid is rendered client-side from /schedules. It exists to
+    answer one question the list view cannot: is anything scheduled on top
+    of anything else? So blocks are time-proportional, overlaps clash
+    visibly, and disabled routines show as ghosts rather than vanishing."""
 
-    @staticmethod
-    def _render(schedules, today_index=0):
+    CAL_FUNCTIONS = ["escapeHtml", "toMinutes", "fromMinutes", "endsABlock",
+                     "splitAtMidnight", "markClashes", "assignLanes",
+                     "calendarBlocks", "renderCalendar"]
+
+    @classmethod
+    def _script(cls, prologue, epilogue):
         with open(INDEX) as f:
             markup = f.read()
-        def fn(name):
-            return extract_function(markup, name)
 
-        script = (
+        def const(name):
+            return re.search(r"const %s = [^\n]+;" % name, markup).group(0)
+
+        return (
             "const DAY_NAMES = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];\n"
             "const ACTION_ICON = {play:'>',pause:'||',resume:'>',skip:'>|',"
             "previous:'|<',volume:'V',clearqueue:'X'};\n"
-            + fn("escapeHtml") + "\n"
-            "const _out = {};\n"
-            "const document = {getElementById: () => ({ set innerHTML(v) { _out.html = v; },"
-            " get innerHTML() { return _out.html; } })};\n"
-            "const fetch = () => Promise.resolve({json: () => Promise.resolve("
-            + json.dumps({"schedules": schedules}) + ")});\n"
-            "const Date = class { getDay() { return " + str((today_index + 1) % 7) + "; } };\n"
-            + fn("renderCalendar") + "\n"
-            "renderCalendar();\n"
-            "setTimeout(() => console.log(_out.html), 0);\n"
+            "function sourceName(uri) { return uri; }\n"
+            + const("BLOCK_ENDERS") + "\n"
+            + const("OPEN_TAIL_MINUTES") + "\n"
+            + const("CAL_PX_PER_MIN") + "\n"
+            + "\n".join(extract_function(markup, n) for n in cls.CAL_FUNCTIONS)
+            + "\n" + prologue + "\n" + epilogue
         )
-        out = subprocess.run(["node", "-e", script], capture_output=True, text=True, timeout=30)
+
+    @classmethod
+    def _run(cls, prologue, epilogue):
+        out = subprocess.run(["node", "-e", cls._script(prologue, epilogue)],
+                             capture_output=True, text=True, timeout=30)
         assert out.returncode == 0, out.stderr
         return out.stdout
 
+    @classmethod
+    def _render(cls, schedules, today_index=0):
+        prologue = (
+            "const _out = {};\n"
+            "const document = {getElementById: () => ({ set innerHTML(v) { _out.html = v; },"
+            " get innerHTML() { return _out.html; },"
+            " style: {display: ''} })};\n"
+            "const fetch = () => Promise.resolve({json: () => Promise.resolve("
+            + json.dumps({"schedules": schedules}) + ")});\n"
+            # Noon, so the now-line falls inside any window that includes 12:00.
+            "const Date = class { getDay() { return " + str((today_index + 1) % 7) + "; }"
+            " getHours() { return 12; } getMinutes() { return 0; } };\n"
+        )
+        return cls._run(prologue,
+                        "renderCalendar();\nsetTimeout(() => console.log(_out.html), 0);\n")
+
+    @classmethod
+    def _blocks(cls, schedules):
+        return json.loads(cls._run(
+            "", "console.log(JSON.stringify(calendarBlocks("
+                + json.dumps(schedules) + ")));"))
+
+    # Steps carry `at` (and next_day) because that is what /schedules serves;
+    # the grid never sees raw offsets.
     ROUTINE = {
         "id": "a", "time": "07:00", "days": [0, 1, 2, 3, 4], "label": "Wake-up",
-        "enabled": True, "steps": [{"offset": 0, "action": "play", "uri": "spotify:playlist:x"}],
+        "enabled": True,
+        "steps": [{"offset": 0, "action": "play", "uri": "spotify:playlist:x",
+                   "at": "07:00"},
+                  {"offset": 90, "action": "pause", "at": "08:30"}],
     }
 
-    def test_marks_the_days_a_routine_runs(self):
+    def test_a_routine_paints_a_block_on_each_of_its_days(self):
         html = self._render([self.ROUTINE])
-        rows = html.split("<tr>")[2]           # the 07:00 row
-        cells = rows.split("<td")[2:]          # skip the time cell
-        assert sum('class="hit"' in c for c in cells) == 5
-        assert sum('class="miss"' in c for c in cells) == 2
+        assert html.count("wk-block") == 5
 
     def test_empty_days_fills_the_whole_week(self):
         html = self._render([{**self.ROUTINE, "days": []}])
-        assert html.count('class="hit"') == 7
+        assert html.count("wk-block") == 7
 
-    def test_disabled_routines_are_hidden(self):
-        assert "Nothing enabled" in self._render([{**self.ROUTINE, "enabled": False}])
+    def test_block_height_is_the_duration(self):
+        """90 minutes at 0.7px/min, so time reads as vertical distance."""
+        html = self._render([self.ROUTINE])
+        assert "height:63px" in html
+
+    def test_a_play_with_no_pause_fades_out_instead_of_claiming_an_end(self):
+        html = self._render([{**self.ROUTINE, "steps": self.ROUTINE["steps"][:1]}])
+        assert "open" in html
+        assert "07:00–…" in html
+
+    def test_disabled_routines_are_ghosts_not_hidden(self):
+        """They used to vanish from the calendar entirely -- but a routine
+        that exists and is not firing is information, not clutter."""
+        html = self._render([{**self.ROUTINE, "enabled": False}])
+        assert html.count("ghost") >= 5
+        assert "clash" not in html
 
     def test_no_schedules_says_so(self):
-        assert "Nothing enabled" in self._render([])
-
-    def test_times_are_rows_in_order(self):
-        html = self._render([
-            {**self.ROUTINE, "time": "22:30", "id": "b"},
-            self.ROUTINE,
-        ])
-        assert html.index("07:00") < html.index("22:30")
+        assert "Nothing scheduled" in self._render([])
 
     def test_today_column_is_marked(self):
         """Monday-based: the scheduler uses 0=Mon, JS getDay() is 0=Sun."""
         html = self._render([self.ROUTINE], today_index=2)   # Wednesday
-        headers = html.split("</tr>")[0]
-        assert 'class="today">Wed' in headers
+        head = html.split("wk-body")[0]
+        assert 'class="today">Wed' in head
 
-    def test_label_is_escaped_in_the_cell(self):
+    def test_the_now_line_is_drawn_on_today_only(self):
+        html = self._render([{**self.ROUTINE, "steps": [
+            {"offset": 0, "action": "play", "uri": "spotify:playlist:x",
+             "at": "07:00"},
+            {"offset": 600, "action": "pause", "at": "17:00"}]}])
+        assert html.count("wk-now") == 1
+
+    def test_overlapping_routines_clash_and_share_lanes(self):
+        overlapping = [
+            self.ROUTINE,
+            {**self.ROUTINE, "id": "b", "label": "Other", "days": [0],
+             "steps": [{"offset": 0, "action": "play",
+                        "uri": "spotify:playlist:y", "at": "08:00"},
+                       {"offset": 60, "action": "pause", "at": "09:00"}]},
+        ]
+        cal = self._blocks(overlapping)
+        monday = [b for b in cal["blocks"] if b["day"] == 0]
+        assert all(b["clash"] for b in monday)
+        assert {b["lane"] for b in monday} == {0, 1}
+        assert all(b["lanes"] == 2 for b in monday)
+        # Tuesday-Friday have only the wake-up: no clash, full width.
+        tuesday = [b for b in cal["blocks"] if b["day"] == 1]
+        assert not any(b.get("clash") for b in tuesday)
+        assert all(b["lanes"] == 1 for b in tuesday)
+
+    def test_a_block_crossing_midnight_splits_onto_the_next_day(self):
+        """Sunday 23:30 to 00:30 is Sunday until midnight and Monday after --
+        the same modular weekday rule the scheduler itself uses."""
+        cal = self._blocks([{
+            "id": "late", "time": "23:30", "days": [6], "label": "Late",
+            "enabled": True,
+            "steps": [{"offset": 0, "action": "play",
+                       "uri": "spotify:playlist:x", "at": "23:30"},
+                      {"offset": 60, "action": "pause",
+                       "at": "00:30", "next_day": True}],
+        }])
+        parts = sorted(cal["blocks"], key=lambda b: b["day"])
+        assert [(b["day"], b["start"], b["end"]) for b in parts] == [
+            (0, 0, 30), (6, 23 * 60 + 30, 1440)]
+        assert parts[0]["cont"] is True
+
+    def test_non_play_steps_are_markers_not_blocks(self):
+        cal = self._blocks([{
+            "id": "v", "time": "21:00", "days": [0], "label": "Wind down",
+            "enabled": True,
+            "steps": [{"offset": 0, "action": "volume", "volume": 15,
+                       "at": "21:00"},
+                      {"offset": 30, "action": "pause", "at": "21:30"}],
+        }])
+        assert cal["blocks"] == []
+        assert [(m["min"], m["action"]) for m in cal["markers"]] == [
+            (21 * 60, "volume"), (21 * 60 + 30, "pause")]
+
+    def test_a_pause_that_ends_a_block_is_not_also_a_marker(self):
+        cal = self._blocks([self.ROUTINE])
+        assert cal["markers"] == []
+
+    def test_label_is_escaped_in_the_block(self):
+        """The label reaches both the block body and its title attribute."""
         html = self._render([{**self.ROUTINE, "label": '<img src=x onerror=alert(1)>'}])
-        assert "<img" not in html.split("<table")[1]
+        assert "<img" not in html.split("wk-body")[1]
 
 
 class TestSplitLayout:

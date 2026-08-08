@@ -21,7 +21,7 @@ def css():
 
 
 TOKENS = ["--ground", "--panel", "--panel-2", "--line", "--ink", "--ink-2",
-          "--muted", "--faint", "--accent", "--accent-soft", "--accent-2",
+          "--muted", "--accent", "--accent-soft", "--accent-2",
           "--on-accent"]
 
 

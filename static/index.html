@@ -19,7 +19,6 @@
     --ink:      #E9ECEF;
     --ink-2:    #A8B2BF;
     --muted:    #7D8896;
-    --faint:    #333B45;
     --accent:      #9BD3A0;
     --accent-soft: #3E5A42;
     --accent-2:    #E7AFC4;
@@ -41,7 +40,6 @@
       --ink:      #141821;
       --ink-2:    #414C5A;
       --muted:    #59636F;
-      --faint:    #C6CDD6;
       --accent:      #6B4423;
       --accent-soft: #D8C4B0;
       --accent-2:    #3F6B4C;
@@ -59,7 +57,6 @@
     --ink:      #141821;
     --ink-2:    #414C5A;
     --muted:    #59636F;
-    --faint:    #C6CDD6;
     --accent:    #6B4423;
     --accent-soft: #D8C4B0;
     --accent-2:    #3F6B4C;
@@ -74,7 +71,6 @@
     --ink:      #E9ECEF;
     --ink-2:    #A8B2BF;
     --muted:    #7D8896;
-    --faint:    #333B45;
     --accent:      #9BD3A0;
     --accent-soft: #3E5A42;
     --accent-2:    #E7AFC4;
@@ -343,19 +339,56 @@
     background: color-mix(in srgb, var(--accent) 18%, var(--panel));
     border-color: var(--accent-soft); color: var(--accent);
   }
-  .cal { width: 100%; border-collapse: collapse; font-size: 12px; }
-  .cal th {
-    font-weight: 400; color: var(--muted); font-size: 10px; padding: 5px 2px;
-    font-family: var(--mono); letter-spacing: .06em; border-bottom: 1px solid var(--line);
+  .wk-head {
+    display: grid; grid-template-columns: 30px repeat(7, 1fr); gap: 0 2px;
+    font-family: var(--mono); font-size: 10px; color: var(--muted);
+    letter-spacing: .06em; text-align: center; padding-bottom: 4px;
   }
-  .cal th.today { color: var(--accent-2); font-weight: 600; }
-  .cal td { text-align: center; padding: 8px 2px; border-bottom: 1px solid var(--line); }
-  .cal td.time {
-    text-align: right; padding-right: 8px; color: var(--ink-2);
-    font-family: var(--mono); font-variant-numeric: tabular-nums; white-space: nowrap;
+  .wk-head .today { color: var(--accent-2); font-weight: 600; }
+  .wk-body { display: grid; grid-template-columns: 30px repeat(7, 1fr); gap: 0 2px; }
+  .wk-hours { position: relative; }
+  .wk-hour {
+    position: absolute; right: 4px; transform: translateY(-50%);
+    font-family: var(--mono); font-size: 9px; color: var(--muted);
   }
-  .cal td.miss { color: var(--faint); }
-  .cal td.hit { cursor: pointer; }
+  .wk-day {
+    position: relative; border-radius: 4px; background-color: var(--panel);
+    /* hour ruling; the 42px period is 60 minutes at CAL_PX_PER_MIN (0.7) */
+    background-image: repeating-linear-gradient(to bottom,
+      var(--line) 0, var(--line) 1px, transparent 1px, transparent 42px);
+  }
+  .wk-day.today { background-color: color-mix(in srgb, var(--accent) 6%, var(--panel)); }
+  .wk-block {
+    position: absolute; box-sizing: border-box; overflow: hidden; cursor: pointer;
+    font-size: 9px; line-height: 1.2; padding: 2px 3px; border-radius: 4px;
+    background: var(--accent-soft); border: 1px solid var(--accent);
+    border-left-width: 3px; color: var(--ink);
+  }
+  /* No end time means no truthful bottom edge: fade out instead. */
+  .wk-block.open {
+    border-bottom: none;
+    -webkit-mask-image: linear-gradient(to bottom, black 55%, transparent);
+    mask-image: linear-gradient(to bottom, black 55%, transparent);
+  }
+  /* The after-midnight half of a split block. */
+  .wk-block.cont { border-top-style: dashed; }
+  .wk-block.clash {
+    border-color: var(--accent-2);
+    background: color-mix(in srgb, var(--accent-2) 30%, var(--panel));
+  }
+  .wk-block.ghost {
+    background: transparent; border-style: dashed;
+    color: var(--muted); opacity: .7;
+  }
+  .wk-mark {
+    position: absolute; left: 2px; transform: translateY(-50%);
+    font-size: 9px; cursor: pointer; z-index: 1;
+  }
+  .wk-mark.ghost { opacity: .5; }
+  .wk-now {
+    position: absolute; left: 0; right: 0; height: 0;
+    border-top: 1px dashed var(--accent-2); z-index: 2; pointer-events: none;
+  }
 
   /* sheet + toast */
   .sheet {
@@ -1761,6 +1794,9 @@
       const enabled = list.filter(s => s.enabled).length;
       document.getElementById('chip-sched').textContent =
         list.length ? (enabled + ' of ' + list.length + ' routines on') : 'No schedules';
+      // Saving from the editor lands here; if the week view is what is on
+      // screen, it must not keep showing the pre-edit world.
+      if (document.getElementById('sched-cal').style.display !== 'none') renderCalendar();
       if (!list.length) {
         document.getElementById('sched-list').innerHTML =
           '<div class="empty">Nothing scheduled yet.</div>';
@@ -1808,37 +1844,187 @@
     if (isCal) renderCalendar();
   }
 
+  // Actions that stop whatever a play step started. A later play ends the
+  // block too: scheduled plays clear the queue first, so the old content is
+  // gone at that minute either way.
+  const BLOCK_ENDERS = {play: true, pause: true, clearqueue: true};
+  // A block with no end has no truthful bottom edge -- "plays until something
+  // stops it" -- so it gets a short visual tail (and a fade) instead of
+  // painting all the way to midnight.
+  const OPEN_TAIL_MINUTES = 60;
+  // Keep in step with the 42px ruling period in the .wk-day CSS (60 × 0.7).
+  const CAL_PX_PER_MIN = 0.7;
+
+  // A pause or clearqueue that follows a play is that block's bottom edge,
+  // not a separate event worth a marker of its own.
+  function endsABlock(steps, i) {
+    if (!BLOCK_ENDERS[steps[i].action]) return false;
+    for (let j = i - 1; j >= 0; j--) {
+      if (steps[j].action === 'play') return true;
+      if (BLOCK_ENDERS[steps[j].action]) return false;
+    }
+    return false;
+  }
+
+  // A 23:00 block ending 00:30 belongs to the trigger day until midnight and
+  // to the following day after it. The weekday wrap is modular on purpose: a
+  // Sunday routine spilling past midnight lands on Monday.
+  function splitAtMidnight(day, start, end) {
+    if (start >= 1440) { day = (day + 1) % 7; start -= 1440; end -= 1440; }
+    if (end <= 1440) return [[day, start, end]];
+    return [[day, start, 1440], [(day + 1) % 7, 0, end - 1440]];
+  }
+
+  // Two enabled routines occupying the same minutes of the same day is
+  // exactly what the grid exists to surface. Ghosts (disabled routines)
+  // cannot clash -- they are not going to fire.
+  function markClashes(blocks) {
+    for (let i = 0; i < blocks.length; i++) {
+      for (let j = i + 1; j < blocks.length; j++) {
+        const a = blocks[i], b = blocks[j];
+        if (a.day === b.day && !a.ghost && !b.ghost && a.id !== b.id &&
+            a.start < b.end && b.start < a.end) {
+          a.clash = true; b.clash = true;
+        }
+      }
+    }
+  }
+
+  // Overlapping blocks share the column side by side instead of painting
+  // over each other. Greedy first-free-lane; every block in a day takes the
+  // day's final lane count so widths line up down the column.
+  function assignLanes(blocks) {
+    for (let day = 0; day < 7; day++) {
+      const here = blocks.filter(b => b.day === day)
+                         .sort((a, b) => a.start - b.start || a.end - b.end);
+      const laneEnds = [];
+      here.forEach(b => {
+        let lane = laneEnds.findIndex(endAt => endAt <= b.start);
+        if (lane === -1) { lane = laneEnds.length; laneEnds.push(0); }
+        laneEnds[lane] = b.end;
+        b.lane = lane;
+      });
+      here.forEach(b => { b.lanes = laneEnds.length; });
+    }
+  }
+
+  // Turn routines into positioned blocks and markers for the week grid.
+  // Pure data in, pure data out -- the DOM never enters -- so the layout
+  // rules (midnight splits, clashes, lanes) are directly testable. An open
+  // block's `end` is already the visual tail; `open` says the real end is
+  // unknown, which also means its clash test only sees the first hour.
+  function calendarBlocks(schedules) {
+    const blocks = [], markers = [];
+    (schedules || []).forEach(s => {
+      const days = (s.days && s.days.length) ? s.days : [0, 1, 2, 3, 4, 5, 6];
+      const ghost = s.enabled === false;
+      const steps = s.steps || [];
+      const absMin = step =>
+        toMinutes(step.at || s.time) + (step.next_day ? 1440 : 0);
+      steps.forEach((step, i) => {
+        if (step.action === 'play') {
+          let end = null;
+          for (let j = i + 1; j < steps.length; j++) {
+            if (BLOCK_ENDERS[steps[j].action]) { end = absMin(steps[j]); break; }
+          }
+          const start = absMin(step);
+          const open = end === null;
+          days.forEach(day => {
+            splitAtMidnight(day, start, open ? start + OPEN_TAIL_MINUTES : end)
+              .forEach((part, k) => blocks.push({
+                day: part[0], start: part[1], end: part[2],
+                open: open, cont: k > 0, id: s.id, ghost: ghost,
+                label: s.label || sourceName(step.uri),
+              }));
+          });
+        } else if (!endsABlock(steps, i)) {
+          const at = absMin(step);
+          days.forEach(day => markers.push({
+            day: (day + Math.floor(at / 1440)) % 7, min: at % 1440,
+            action: step.action, id: s.id, ghost: ghost,
+          }));
+        }
+      });
+    });
+    markClashes(blocks);
+    assignLanes(blocks);
+    return {blocks: blocks, markers: markers};
+  }
+
   function renderCalendar() {
     fetch('/schedules').then(r => r.json()).then(data => {
-      const list = (data.schedules || []).filter(s => s.enabled);
+      const list = data.schedules || [];
       const el = document.getElementById('sched-cal');
-      if (!list.length) { el.innerHTML = '<div class="empty">Nothing enabled to show.</div>'; return; }
-      const times = [...new Set(list.map(s => s.time))].sort();
+      if (!list.length) {
+        el.innerHTML = '<div class="empty">Nothing scheduled yet.</div>';
+        return;
+      }
+      const cal = calendarBlocks(list);
+
+      // Show only the hours anything happens in, with an hour of margin --
+      // a morning-and-evening household should not be mostly empty night.
+      const mins = cal.blocks.map(b => b.start)
+        .concat(cal.blocks.map(b => b.end), cal.markers.map(m => m.min));
+      const fromHour = mins.length
+        ? Math.max(0, Math.floor(Math.min.apply(null, mins) / 60) - 1) : 6;
+      const toHour = mins.length
+        ? Math.min(24, Math.ceil(Math.max.apply(null, mins) / 60) + 1) : 22;
+      // Rounded: 90 * 0.7 is 63.00000000000001 in floating point, and that
+      // is what would land in the style attribute otherwise.
+      const height = Math.round((toHour - fromHour) * 60 * CAL_PX_PER_MIN);
+      const top = m => Math.round((m - fromHour * 60) * CAL_PX_PER_MIN);
+
       // JS getDay() is Sunday-based; the scheduler is Monday-based.
-      const todayIdx = (new Date().getDay() + 6) % 7;
+      const now = new Date();
+      const todayIdx = (now.getDay() + 6) % 7;
+      const nowMin = now.getHours() * 60 + now.getMinutes();
 
-      let html = '<table class="cal"><tr><th></th>' +
-        DAY_NAMES.map((d, i) =>
-          '<th class="' + (i === todayIdx ? 'today' : '') + '">' + d + '</th>').join('') + '</tr>';
+      let hours = '';
+      for (let h = fromHour; h <= toHour; h++) {
+        hours += '<div class="wk-hour" style="top:' + top(h * 60) + 'px">' +
+                 String(h % 24).padStart(2, '0') + '</div>';
+      }
 
-      times.forEach(t => {
-        html += '<tr><td class="time">' + escapeHtml(t) + '</td>';
-        for (let d = 0; d < 7; d++) {
-          const here = list.filter(s =>
-            s.time === t && ((s.days || []).length === 0 || s.days.includes(d)));
-          if (!here.length) {
-            html += '<td class="miss">·</td>';
-          } else {
-            const icons = here.map(s =>
-              (s.steps || []).map(st => ACTION_ICON[st.action] || '•').join('')).join(' ');
-            const names = here.map(s => s.label || '(unnamed)').join(', ');
-            html += '<td class="hit" onclick="showToast(\'' +
-              escapeHtml(t + ' · ' + names) + '\')">' + escapeHtml(icons) + '</td>';
-          }
+      const cols = DAY_NAMES.map((name, d) => {
+        let inner = '';
+        cal.blocks.filter(b => b.day === d).forEach(b => {
+          const width = 100 / b.lanes;
+          const when = fromMinutes(b.start) + '–' +
+                       (b.open ? '…' : fromMinutes(b.end));
+          inner += '<div class="wk-block' + (b.clash ? ' clash' : '') +
+              (b.ghost ? ' ghost' : '') + (b.open ? ' open' : '') +
+              (b.cont ? ' cont' : '') + '" ' +
+            'style="top:' + top(b.start) + 'px;' +
+              'height:' + Math.max(14, Math.round((b.end - b.start) * CAL_PX_PER_MIN)) + 'px;' +
+              'left:' + (b.lane * width) + '%;width:' + width + '%" ' +
+            'title="' + escapeHtml(when + ' · ' + b.label) + '" ' +
+            'onclick="editRoutine(\'' + b.id + '\')">' +
+            escapeHtml(b.label) + '</div>';
+        });
+        cal.markers.filter(m => m.day === d).forEach(m => {
+          inner += '<div class="wk-mark' + (m.ghost ? ' ghost' : '') + '" ' +
+            'style="top:' + top(m.min) + 'px" ' +
+            'title="' + escapeHtml(fromMinutes(m.min) + ' · ' + m.action) + '" ' +
+            'onclick="editRoutine(\'' + m.id + '\')">' +
+            (ACTION_ICON[m.action] || '•') + '</div>';
+        });
+        if (d === todayIdx && nowMin >= fromHour * 60 && nowMin <= toHour * 60) {
+          inner += '<div class="wk-now" style="top:' + top(nowMin) + 'px"></div>';
         }
-        html += '</tr>';
-      });
-      el.innerHTML = html + '</table>';
+        return '<div class="wk-day' + (d === todayIdx ? ' today' : '') + '" ' +
+               'style="height:' + height + 'px">' + inner + '</div>';
+      }).join('');
+
+      el.innerHTML =
+        '<div class="wk-head"><div></div>' +
+          DAY_NAMES.map((name, d) =>
+            '<div class="' + (d === todayIdx ? 'today' : '') + '">' +
+            name + '</div>').join('') +
+        '</div>' +
+        '<div class="wk-body">' +
+          '<div class="wk-hours" style="height:' + height + 'px">' +
+            hours + '</div>' + cols +
+        '</div>';
     });
   }
 
