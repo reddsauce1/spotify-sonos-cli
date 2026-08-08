@@ -428,6 +428,10 @@
   .ed-step .ed-act { flex: 1; min-width: 0; }
   .ed-step .ed-src { flex: 1; min-width: 0; }
   .ed-step .ed-vol { width: 66px; flex: none; }
+  .ed-until {
+    display: flex; align-items: center; gap: 4px; flex: none;
+    color: var(--muted); font-size: 0.85em;
+  }
   .tag {
     font-family: var(--mono); font-size: 9.5px; letter-spacing: .06em;
     padding: 3px 6px; border-radius: 5px; white-space: nowrap;
@@ -1460,6 +1464,31 @@
 
   let EDITOR = null;
 
+  // A pause right after a play reads back as that play's "until" time -- the
+  // same shape saveEditor wrote it out as. A pause that does not follow a
+  // play (or follows one that already has an until) stays a visible step.
+  // Steps arrive sorted by offset, so "right after" is positional.
+  function foldUntils(rawSteps, fallbackAt) {
+    const steps = [];
+    (rawSteps || []).forEach(step => {
+      const prev = steps[steps.length - 1];
+      if (step.action === 'pause' && prev && prev.action === 'play' && !prev.until) {
+        prev.until = step.at || fallbackAt;
+        return;
+      }
+      steps.push({
+        at: step.at || fallbackAt,
+        action: step.action,
+        uri: step.uri || '',
+        name: step.uri ? sourceName(step.uri) : '',
+        volume: (step.volume === undefined || step.volume === null)
+          ? '' : String(step.volume),
+        until: '',
+      });
+    });
+    return steps;
+  }
+
   function openEditor(routine, prefill) {
     if (routine) {
       EDITOR = {
@@ -1468,14 +1497,7 @@
         time: routine.time,
         days: (routine.days || []).slice(),
         enabled: routine.enabled !== false,
-        steps: (routine.steps || []).map(step => ({
-          at: step.at || routine.time,
-          action: step.action,
-          uri: step.uri || '',
-          name: step.uri ? sourceName(step.uri) : '',
-          volume: (step.volume === undefined || step.volume === null)
-            ? '' : String(step.volume),
-        })),
+        steps: foldUntils(routine.steps, routine.time),
       };
     } else {
       EDITOR = {
@@ -1486,7 +1508,7 @@
         EDITOR.label = prefill.name || '';
         EDITOR.steps.push({
           at: EDITOR.time, action: 'play',
-          uri: prefill.uri, name: prefill.name || prefill.uri, volume: '',
+          uri: prefill.uri, name: prefill.name || prefill.uri, volume: '', until: '',
         });
       }
     }
@@ -1528,7 +1550,10 @@
     // steps keep their spacing and every displayed time visibly shifts.
     const delta = toMinutes(value) - toMinutes(EDITOR.time);
     EDITOR.time = value;
-    EDITOR.steps.forEach(step => { step.at = fromMinutes(toMinutes(step.at) + delta); });
+    EDITOR.steps.forEach(step => {
+      step.at = fromMinutes(toMinutes(step.at) + delta);
+      if (step.until) step.until = fromMinutes(toMinutes(step.until) + delta);
+    });
     renderEditor();
   }
 
@@ -1549,8 +1574,8 @@
   function editorAddStep() {
     const last = EDITOR.steps[EDITOR.steps.length - 1];
     EDITOR.steps.push({
-      at: last ? last.at : EDITOR.time,
-      action: 'play', uri: '', name: '', volume: '',
+      at: last ? (last.until || last.at) : EDITOR.time,
+      action: 'play', uri: '', name: '', volume: '', until: '',
     });
     renderEditor();
   }
@@ -1619,6 +1644,15 @@
         'aria-label="Volume" value="' + escapeHtml(step.volume) + '" ' +
         'oninput="EDITOR.steps[' + index + '].volume = this.value">';
     }
+    if (step.action === 'play') {
+      // Optional end time; compiles to a pause step on save. Blank means
+      // play on until something else stops it.
+      detail += '<label class="ed-until">until' +
+        '<input type="time" aria-label="Stop at" ' +
+        'value="' + escapeHtml(step.until || '') + '" ' +
+        'onchange="editorStepField(' + index + ', \'until\', this.value)">' +
+        '</label>';
+    }
 
     return '<div class="ed-step">' +
         '<div class="ed-row">' +
@@ -1679,11 +1713,27 @@
 
   function saveEditor() {
     const trigger = toMinutes(EDITOR.time);
+    const steps = [];
+    EDITOR.steps.forEach(step => {
+      const out = {
+        offset: stepOffset(step.at, trigger),
+        action: step.action,
+      };
+      if (step.uri) out.uri = step.uri;
+      if (step.volume !== '') out.volume = Number(step.volume);
+      steps.push(out);
+      // "until" is editor sugar: it saves as an ordinary pause step, which
+      // is what foldUntils reads back. An until equal to the start time
+      // would be a zero-length play, so it is dropped rather than saved.
+      if (step.action === 'play' && step.until && step.until !== step.at) {
+        steps.push({offset: stepOffset(step.until, trigger), action: 'pause'});
+      }
+    });
     // Re-anchoring in editorStepField should make this unreachable, but if a
     // step still lands past the server's offset cap, fail here in plain
     // words rather than surfacing the server's "offset must be between 0 and
     // 720" 400.
-    if (EDITOR.steps.some(step => stepOffset(step.at, trigger) > MAX_STEP_OFFSET_MIN)) {
+    if (steps.some(step => step.offset > MAX_STEP_OFFSET_MIN)) {
       showToast('❌ Steps span more than 12 hours — split this into two routines');
       return;
     }
@@ -1692,15 +1742,7 @@
       days: EDITOR.days,
       label: EDITOR.label,
       enabled: EDITOR.enabled,
-      steps: EDITOR.steps.map(step => {
-        const out = {
-          offset: stepOffset(step.at, trigger),
-          action: step.action,
-        };
-        if (step.uri) out.uri = step.uri;
-        if (step.volume !== '') out.volume = Number(step.volume);
-        return out;
-      }),
+      steps: steps,
     };
     if (EDITOR.id) payload.id = EDITOR.id;
 

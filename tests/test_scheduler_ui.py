@@ -220,6 +220,139 @@ class TestReanchorBehaviour:
         assert after["time"] == "07:00"
 
 
+class TestPlayStepsHaveAnUntil:
+    """An event that ends used to be a concept that lived only in Len's head
+    -- ending one meant remembering to schedule a pause by hand, which is why
+    routines piled onto each other."""
+
+    def test_the_row_offers_an_until_for_play_steps(self, js):
+        row = re.search(r"function editorStepRow\(step, index\) \{.*?\n  \}", js, re.S).group(0)
+        assert 'aria-label="Stop at"' in row
+        assert "step.action === 'play'" in row
+
+    def test_moving_the_start_time_moves_untils_too(self, js):
+        """Shifting a wake-up 30 minutes must shift when it ends, or the
+        routine silently changes length."""
+        body = re.search(r"function editorTimeChanged\(value\) \{.*?\n  \}", js, re.S).group(0)
+        assert "step.until = fromMinutes(toMinutes(step.until) + delta)" in body
+
+    def test_a_new_step_starts_when_the_previous_one_ends(self, js):
+        body = re.search(r"function editorAddStep\(\) \{.*?\n  \}", js, re.S).group(0)
+        assert "last.until || last.at" in body
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node not installed")
+class TestUntilCompilesToAPauseStep:
+    """'until' is editor sugar over an ordinary pause step: saveEditor writes
+    the pause, foldUntils reads it back, and the server never learns a new
+    concept. Run the real functions rather than trusting a grep."""
+
+    @staticmethod
+    def _run(script_tail):
+        with open(INDEX_HTML) as handle:
+            markup = handle.read()
+
+        def grab(name):
+            start = markup.index("function " + name + "(")
+            line_start = markup.rfind("\n", 0, start) + 1
+            indent = markup[line_start:start]
+            close = markup.index("\n" + indent + "}", start)
+            return markup[line_start:close + len(indent) + 2]
+
+        def grab_const(name):
+            return re.search(r"const %s = [^\n]+;" % name, markup).group(0)
+
+        script = (
+            "function sourceName() { return ''; }\n"
+            "function renderEditor() {}\n"
+            "function closeEditor() {}\n"
+            "function loadSchedules() {}\n"
+            "const TOASTS = [];\n"
+            "function showToast(m) { TOASTS.push(m); }\n"
+            "const POSTS = [];\n"
+            "function postJson(url, payload) { POSTS.push(payload); return {then() {}}; }\n"
+            + grab_const("HHMM_RE") + "\n"
+            + grab_const("MAX_STEP_OFFSET_MIN") + "\n"
+            + grab("toMinutes") + "\n"
+            + grab("fromMinutes") + "\n"
+            + grab("stepOffset") + "\n"
+            + grab("foldUntils") + "\n"
+            + grab("saveEditor") + "\n"
+            + script_tail
+        )
+        out = subprocess.run(["node", "-e", script], capture_output=True, text=True, timeout=30)
+        assert out.returncode == 0, out.stderr
+        return json.loads(out.stdout)
+
+    def _editor(self, steps, time="06:00"):
+        return ("let EDITOR = " + json.dumps({
+            "id": None, "label": "", "time": time, "days": [0],
+            "enabled": True, "steps": steps}) + ";\n")
+
+    def test_until_saves_as_a_pause_at_that_time(self):
+        posted = self._run(
+            self._editor([{"at": "06:00", "action": "play",
+                           "uri": "spotify:playlist:abc",
+                           "volume": "25", "until": "07:30"}])
+            + "saveEditor();\nconsole.log(JSON.stringify(POSTS[0]));")
+        assert posted["steps"] == [
+            {"offset": 0, "action": "play",
+             "uri": "spotify:playlist:abc", "volume": 25},
+            {"offset": 90, "action": "pause"},
+        ]
+
+    def test_an_until_past_midnight_wraps(self):
+        """A 23:00 show ending at 00:30 is 90 minutes, not -22.5 hours."""
+        posted = self._run(
+            self._editor([{"at": "23:00", "action": "play",
+                           "uri": "spotify:playlist:abc",
+                           "volume": "", "until": "00:30"}], time="23:00")
+            + "saveEditor();\nconsole.log(JSON.stringify(POSTS[0]));")
+        assert posted["steps"][1] == {"offset": 90, "action": "pause"}
+
+    def test_a_zero_length_until_is_dropped(self):
+        posted = self._run(
+            self._editor([{"at": "06:00", "action": "play",
+                           "uri": "spotify:playlist:abc",
+                           "volume": "", "until": "06:00"}])
+            + "saveEditor();\nconsole.log(JSON.stringify(POSTS[0]));")
+        assert [s["action"] for s in posted["steps"]] == ["play"]
+
+    def test_an_until_past_the_cap_blocks_the_save(self):
+        out = self._run(
+            self._editor([{"at": "06:00", "action": "play",
+                           "uri": "spotify:playlist:abc",
+                           "volume": "", "until": "19:30"}])
+            + "saveEditor();\n"
+            + "console.log(JSON.stringify({posts: POSTS, toasts: TOASTS}));")
+        assert out["posts"] == []
+        assert any("12 hours" in t for t in out["toasts"])
+
+    def test_a_pause_after_a_play_reads_back_as_until(self):
+        folded = self._run(
+            "console.log(JSON.stringify(foldUntils(["
+            "{at: '06:00', action: 'play', uri: 'spotify:playlist:abc'},"
+            "{at: '07:30', action: 'pause'}], '06:00')));")
+        assert len(folded) == 1
+        assert folded[0]["action"] == "play"
+        assert folded[0]["until"] == "07:30"
+
+    def test_a_standalone_pause_stays_a_visible_step(self):
+        folded = self._run(
+            "console.log(JSON.stringify(foldUntils(["
+            "{at: '06:00', action: 'pause'}], '06:00')));")
+        assert [s["action"] for s in folded] == ["pause"]
+
+    def test_only_one_pause_folds_per_play(self):
+        folded = self._run(
+            "console.log(JSON.stringify(foldUntils(["
+            "{at: '06:00', action: 'play', uri: 'spotify:playlist:abc'},"
+            "{at: '07:00', action: 'pause'},"
+            "{at: '07:30', action: 'pause'}], '06:00')));")
+        assert [s["action"] for s in folded] == ["play", "pause"]
+        assert folded[0]["until"] == "07:00"
+
+
 class TestNextRunIsAlwaysVisible:
     """The missing feedback that let a Sunday-only alarm go unnoticed."""
 

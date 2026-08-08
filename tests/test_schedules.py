@@ -142,6 +142,68 @@ class TestFiring:
                 })
         vol.assert_not_called()
 
+    def test_play_clears_the_queue_first(self, dj, server_mod):
+        """spotify/now inserts rather than replaces, so without the clear
+        every routine piled onto the previous event's queue."""
+        calls = []
+        with patch.object(dj, "_do_volume", side_effect=lambda **k: calls.append("volume")):
+            with patch.object(dj, "_do_clearqueue", side_effect=lambda: calls.append("clear")):
+                with patch.object(dj, "_do_play", side_effect=lambda **k: calls.append("play")):
+                    server_mod._fire_schedule(dj, {
+                        "action": "play", "uri": "spotify:playlist:abc",
+                        "volume": 25, "label": "morning",
+                    })
+        assert calls == ["volume", "clear", "play"]
+
+    def test_a_failed_clear_does_not_block_the_alarm(self, dj, server_mod, caplog):
+        """The alarm going off matters more than the queue being tidy."""
+        import logging
+        with caplog.at_level(logging.WARNING, logger="dj"):
+            with patch.object(dj, "_do_clearqueue", return_value={"error": "boom"}):
+                with patch.object(dj, "_do_play", return_value={"status": "playing"}) as play:
+                    ok, error = server_mod._fire_schedule(dj, {
+                        "action": "play", "uri": "spotify:playlist:abc", "label": "morning",
+                    })
+        play.assert_called_once()
+        assert ok and error is None
+        assert "clearqueue" in caplog.text
+
+    def test_the_clear_is_skipped_while_an_identical_load_is_unsettled(self, dj, server_mod):
+        """A retry after a timed-out load must not wipe the queue: the load
+        may still land on the speaker, and _content_load's dedupe will refuse
+        to send it again -- clearing here would turn a late success into
+        silence."""
+        uri = "spotify:playlist:abc"
+        server_mod._content_loads[("now", uri)] = {
+            "at": time.monotonic(), "finished": None,
+            "result": None, "ambiguous": False,
+        }
+        try:
+            with patch.object(dj, "_do_clearqueue") as clear:
+                with patch.object(dj, "_do_play"):
+                    server_mod._fire_schedule(
+                        dj, {"action": "play", "uri": uri, "label": "x"})
+            clear.assert_not_called()
+        finally:
+            server_mod._content_loads.pop(("now", uri), None)
+
+    def test_a_stale_dedupe_entry_does_not_suppress_the_clear(self, dj, server_mod):
+        """Yesterday's load of the same playlist is long settled; only a
+        fresh entry within the dedupe window holds the clear back."""
+        uri = "spotify:playlist:abc"
+        server_mod._content_loads[("now", uri)] = {
+            "at": time.monotonic() - server_mod.CONTENT_DEDUP_SECONDS - 1,
+            "finished": None, "result": None, "ambiguous": True,
+        }
+        try:
+            with patch.object(dj, "_do_clearqueue") as clear:
+                with patch.object(dj, "_do_play"):
+                    server_mod._fire_schedule(
+                        dj, {"action": "play", "uri": uri, "label": "x"})
+            clear.assert_called_once()
+        finally:
+            server_mod._content_loads.pop(("now", uri), None)
+
     @pytest.mark.parametrize("action,method", [
         ("pause", "_do_pause"), ("resume", "_do_resume"),
         ("skip", "_do_skip"), ("previous", "_do_previous"),

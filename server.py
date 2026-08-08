@@ -702,6 +702,22 @@ def _record_step_outcome(claimed, ok, error):
         _save_schedules_locked()
 
 
+def _now_load_is_deduped(uri):
+    """True while _content_load would answer a spotify/now for this uri from
+    its dedupe table instead of sending it -- the same load is in flight,
+    timed out ambiguously, or finished within the dedupe window.
+
+    The scheduler asks before clearing the queue ahead of a play: clearing
+    and then not re-adding would wipe content that is still arriving (or
+    already playing), which is a worse morning than a dirty queue.
+    """
+    key = ('now', uri)
+    now = time.monotonic()
+    with _content_lock:
+        entry = _content_loads.get(key)
+        return entry is not None and now - entry['at'] <= CONTENT_DEDUP_SECONDS
+
+
 def _fire_schedule(dj, entry):
     """Run one step. Never raises -- one bad step must not stop the rest.
 
@@ -716,6 +732,16 @@ def _fire_schedule(dj, entry):
             # last night ended on.
             if entry.get('volume') is not None:
                 dj._do_volume(level=entry['volume'])
+            # Scheduled plays start from an empty queue. spotify/now inserts
+            # rather than replaces, so back-to-back routines piled onto each
+            # other and cleaning up between events was a manual chore. A
+            # failed clear is logged but does not block the play: the alarm
+            # going off matters more than the queue being tidy.
+            if not _now_load_is_deduped(entry['uri']):
+                cleared = dj._do_clearqueue()
+                if isinstance(cleared, dict) and 'error' in cleared:
+                    log.warning("Schedule %r: clearqueue before play failed "
+                                "(%s); playing anyway", label, cleared['error'])
             result = dj._do_play(uri=entry['uri'])
         elif action == 'volume':
             result = dj._do_volume(level=entry['volume'])
