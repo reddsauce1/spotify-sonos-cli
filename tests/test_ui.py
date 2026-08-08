@@ -173,7 +173,7 @@ class TestWeeklyCalendar:
 
     CAL_FUNCTIONS = ["escapeHtml", "toMinutes", "fromMinutes", "endsABlock",
                      "splitAtMidnight", "markClashes", "assignLanes",
-                     "calendarBlocks", "renderCalendar"]
+                     "calendarBlocks", "calPalette", "renderCalendar"]
 
     @classmethod
     def _script(cls, prologue, epilogue):
@@ -188,6 +188,10 @@ class TestWeeklyCalendar:
             "const ACTION_ICON = {play:'>',pause:'||',resume:'>',skip:'>|',"
             "previous:'|<',volume:'V',clearqueue:'X'};\n"
             "function sourceName(uri) { return uri; }\n"
+            "let PLAYLISTS = [], STATIONS = [];\n"
+            "let CAL_LIST = [], CAL_WINDOW = {from: 6, to: 22};\n"
+            "let CAL_SOURCES_TRIED = false;\n"
+            "function loadSources() { return Promise.resolve(); }\n"
             + const("BLOCK_ENDERS") + "\n"
             + const("OPEN_TAIL_MINUTES") + "\n"
             + const("CAL_PX_PER_MIN") + "\n"
@@ -329,6 +333,138 @@ class TestWeeklyCalendar:
         """The label reaches both the block body and its title attribute."""
         html = self._render([{**self.ROUTINE, "label": '<img src=x onerror=alert(1)>'}])
         assert "<img" not in html.split("wk-body")[1]
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node not installed")
+class TestCalendarDrag:
+    """Dragging edits routines through the same /schedule_save payloads the
+    editor sends. The pointer mechanics cannot run under node, but every
+    decision they feed -- where a block may land, what a drop creates, how
+    the trigger re-anchors -- lives in pure functions, tested here for real."""
+
+    FUNCTIONS = ["toMinutes", "fromMinutes", "calSnap",
+                 "blockSavePayload", "dropSavePayload"]
+
+    @classmethod
+    def _run(cls, expression):
+        with open(INDEX) as f:
+            markup = f.read()
+
+        def const(name):
+            return re.search(r"const %s = [^\n]+;" % name, markup).group(0)
+
+        script = (
+            const("MAX_STEP_OFFSET_MIN") + "\n"
+            + const("CAL_SNAP_MINUTES") + "\n"
+            + "\n".join(extract_function(markup, n) for n in cls.FUNCTIONS)
+            + "\nconsole.log(JSON.stringify(" + expression + "));"
+        )
+        out = subprocess.run(["node", "-e", script], capture_output=True, text=True, timeout=30)
+        assert out.returncode == 0, out.stderr
+        return json.loads(out.stdout)
+
+    ROUTINE = {
+        "id": "a", "time": "07:00", "days": [0, 1, 2, 3, 4], "label": "Wake-up",
+        "enabled": True,
+        "steps": [{"offset": 0, "action": "play", "uri": "spotify:playlist:x"},
+                  {"offset": 90, "action": "pause"}],
+    }
+
+    def _block(self, routine, play, end, new_start, new_end):
+        return self._run("blockSavePayload(%s, %d, %d, %s, %s)" % (
+            json.dumps(routine), play, end,
+            json.dumps(new_start), json.dumps(new_end)))
+
+    def test_moving_a_block_moves_the_trigger_with_it(self):
+        """07:00-08:30 dragged 30 minutes later is a 07:30 routine with the
+        same offsets -- not a 07:00 routine whose steps all shifted."""
+        result = self._block(self.ROUTINE, 0, 1, 7 * 60 + 30, 9 * 60)
+        assert result["payload"]["time"] == "07:30"
+        assert [s["offset"] for s in result["payload"]["steps"]] == [0, 90]
+
+    def test_resizing_the_bottom_only_touches_the_pause(self):
+        result = self._block(self.ROUTINE, 0, 1, 7 * 60, 10 * 60)
+        assert result["payload"]["time"] == "07:00"
+        assert result["payload"]["steps"][1] == {"offset": 180, "action": "pause"}
+
+    def test_resizing_the_top_reanchors_and_keeps_the_end(self):
+        result = self._block(self.ROUTINE, 0, 1, 6 * 60, 8 * 60 + 30)
+        assert result["payload"]["time"] == "06:00"
+        assert [s["offset"] for s in result["payload"]["steps"]] == [0, 150]
+
+    def test_dragging_the_tail_of_an_open_block_creates_its_pause(self):
+        no_pause = {**self.ROUTINE, "steps": self.ROUTINE["steps"][:1]}
+        result = self._block(no_pause, 0, -1, 7 * 60, 8 * 60)
+        assert [s["action"] for s in result["payload"]["steps"]] == ["play", "pause"]
+        assert result["payload"]["steps"][1]["offset"] == 60
+
+    def test_other_steps_stay_put_and_the_trigger_follows_the_earliest(self):
+        """Their 05:00 housekeeping steps must not move when the play block
+        does; if the play is dragged earlier than them, the trigger follows
+        it and the housekeeping offsets grow instead."""
+        routine = {**self.ROUTINE, "time": "05:00", "steps": [
+            {"offset": 0, "action": "clearqueue"},
+            {"offset": 60, "action": "play", "uri": "spotify:playlist:x"},
+            {"offset": 120, "action": "pause"},
+        ]}
+        result = self._block(routine, 1, 2, 4 * 60, 4 * 60 + 30)
+        payload = result["payload"]
+        assert payload["time"] == "04:00"
+        assert [(s["offset"], s["action"]) for s in payload["steps"]] == [
+            (0, "play"), (30, "pause"), (60, "clearqueue")]
+
+    def test_a_span_past_the_cap_is_an_error_not_a_400(self):
+        result = self._block(self.ROUTINE, 0, 1, 7 * 60, 20 * 60)
+        assert "12 hours" in result["error"]
+
+    def test_uri_and_volume_survive_the_rebuild(self):
+        routine = {**self.ROUTINE, "steps": [
+            {"offset": 0, "action": "play", "uri": "spotify:playlist:x", "volume": 25},
+            {"offset": 90, "action": "pause"},
+        ]}
+        result = self._block(routine, 0, 1, 8 * 60, 9 * 60)
+        assert result["payload"]["steps"][0]["uri"] == "spotify:playlist:x"
+        assert result["payload"]["steps"][0]["volume"] == 25
+
+    def test_a_drop_snaps_and_gets_an_hour_by_default(self):
+        payload = self._run("dropSavePayload('spotify:playlist:x', 'Jazz', 2, 431)")
+        assert payload["time"] == "07:10"
+        assert payload["days"] == [2]
+        assert payload["steps"] == [
+            {"offset": 0, "action": "play", "uri": "spotify:playlist:x"},
+            {"offset": 60, "action": "pause"},
+        ]
+
+
+class TestCalendarDragWiring:
+    """The parts of the drag layer that are about the browser, pinned as
+    strings: lose any of these and the gesture breaks in ways node tests
+    cannot see."""
+
+    def test_blocks_and_chips_own_their_touch_gesture(self, markup):
+        css = markup.split("<style>", 1)[1].split("</style>", 1)[0]
+        block = re.search(r"\.wk-block \{([^}]*)\}", css).group(1)
+        chip = re.search(r"\.wk-chip \{([^}]*)\}", css).group(1)
+        assert "touch-action: none" in block, "touch drag would scroll the pane"
+        assert "touch-action: none" in chip
+        assert "user-select: none" in block
+
+    def test_the_listener_is_delegated_because_the_grid_rerenders(self, markup):
+        assert "getElementById('sched-cal').addEventListener('pointerdown', calPointerDown)" in markup
+
+    def test_a_drag_squelches_the_click_it_releases_into(self, markup):
+        js = markup.split("<script>", 1)[1].rsplit("</script>", 1)[0]
+        body = extract_function(js, "calBlockClick")
+        assert "CAL_SQUELCH" in body
+        for fn in ("calBlockPress", "calChipPress"):
+            assert "CAL_SQUELCH = true" in extract_function(js, fn)
+
+    def test_the_drag_clone_cannot_swallow_elementfrompoint(self, markup):
+        """pointer-events:none on the dragging chip is what lets the drop
+        find the day column underneath the pointer."""
+        css = markup.split("<style>", 1)[1].split("</style>", 1)[0]
+        dragging = re.search(r"\.wk-chip\.dragging \{([^}]*)\}", css).group(1)
+        assert "pointer-events: none" in dragging
 
 
 class TestSplitLayout:

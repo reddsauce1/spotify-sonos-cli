@@ -359,10 +359,13 @@
   }
   .wk-day.today { background-color: color-mix(in srgb, var(--accent) 6%, var(--panel)); }
   .wk-block {
-    position: absolute; box-sizing: border-box; overflow: hidden; cursor: pointer;
+    position: absolute; box-sizing: border-box; overflow: hidden; cursor: grab;
     font-size: 9px; line-height: 1.2; padding: 2px 3px; border-radius: 4px;
     background: var(--accent-soft); border: 1px solid var(--accent);
     border-left-width: 3px; color: var(--ink);
+    /* Own the gesture: without this, touch drags scroll the pane instead.
+       The column background stays scrollable. */
+    touch-action: none; user-select: none; -webkit-user-select: none;
   }
   /* No end time means no truthful bottom edge: fade out instead. */
   .wk-block.open {
@@ -388,6 +391,27 @@
   .wk-now {
     position: absolute; left: 0; right: 0; height: 0;
     border-top: 1px dashed var(--accent-2); z-index: 2; pointer-events: none;
+  }
+  .wk-palette {
+    display: flex; gap: 6px; overflow-x: auto; padding: 2px 0 10px;
+  }
+  .wk-chip {
+    flex: none; padding: 5px 10px; border-radius: 14px; font-size: 11px;
+    background: var(--panel-2); border: 1px solid var(--line); color: var(--ink-2);
+    cursor: grab; white-space: nowrap;
+    touch-action: none; user-select: none; -webkit-user-select: none;
+    -webkit-touch-callout: none;
+  }
+  .wk-chip.dragging {
+    position: fixed; z-index: 60; pointer-events: none; opacity: .85;
+    border-color: var(--accent);
+  }
+  .wk-day.drop { outline: 1px dashed var(--accent); outline-offset: -1px; }
+  .wk-tip {
+    position: fixed; z-index: 60; pointer-events: none;
+    font-family: var(--mono); font-size: 10px; padding: 2px 6px;
+    background: var(--panel-2); border: 1px solid var(--line);
+    border-radius: 4px; color: var(--ink);
   }
 
   /* sheet + toast */
@@ -1923,11 +1947,12 @@
         toMinutes(step.at || s.time) + (step.next_day ? 1440 : 0);
       steps.forEach((step, i) => {
         if (step.action === 'play') {
-          let end = null;
+          let enderIndex = -1;
           for (let j = i + 1; j < steps.length; j++) {
-            if (BLOCK_ENDERS[steps[j].action]) { end = absMin(steps[j]); break; }
+            if (BLOCK_ENDERS[steps[j].action]) { enderIndex = j; break; }
           }
           const start = absMin(step);
+          const end = enderIndex === -1 ? null : absMin(steps[enderIndex]);
           const open = end === null;
           days.forEach(day => {
             splitAtMidnight(day, start, open ? start + OPEN_TAIL_MINUTES : end)
@@ -1935,6 +1960,13 @@
                 day: part[0], start: part[1], end: part[2],
                 open: open, cont: k > 0, id: s.id, ghost: ghost,
                 label: s.label || sourceName(step.uri),
+                // The drag layer edits real steps, so the primary part keeps
+                // the unsplit times and which steps they belong to. The
+                // after-midnight half carries none: it is not a drag handle.
+                play: k === 0 ? i : null,
+                ender: k === 0 ? enderIndex : null,
+                absStart: k === 0 ? start : null,
+                absEnd: k === 0 ? end : null,
               }));
           });
         } else if (!endsABlock(steps, i)) {
@@ -1951,13 +1983,32 @@
     return {blocks: blocks, markers: markers};
   }
 
+  function calPalette() {
+    const chips = STATIONS.map(st => ({uri: st.uri, name: '📻 ' + st.name}))
+      .concat(PLAYLISTS.map(p => ({uri: p.uri, name: p.name})));
+    if (!chips.length) return '';
+    return '<div class="wk-palette">' + chips.map(c =>
+      '<span class="wk-chip" data-uri="' + escapeHtml(c.uri) + '" ' +
+        'data-name="' + escapeHtml(c.name) + '" ' +
+        'onclick="calChipClick(this)">' + escapeHtml(c.name) + '</span>'
+    ).join('') + '</div>';
+  }
+
   function renderCalendar() {
     fetch('/schedules').then(r => r.json()).then(data => {
       const list = data.schedules || [];
+      CAL_LIST = list;
       const el = document.getElementById('sched-cal');
-      if (!list.length) {
+      if (!list.length && !STATIONS.length && !PLAYLISTS.length) {
         el.innerHTML = '<div class="empty">Nothing scheduled yet.</div>';
         return;
+      }
+      // The palette needs the same lists the editor dropdowns use. Tried
+      // once only: for an account with genuinely no playlists and no
+      // stations, retrying from inside the re-render would loop forever.
+      if (!PLAYLISTS.length && !STATIONS.length && !CAL_SOURCES_TRIED) {
+        CAL_SOURCES_TRIED = true;
+        loadSources().then(renderCalendar);
       }
       const cal = calendarBlocks(list);
 
@@ -1969,6 +2020,7 @@
         ? Math.max(0, Math.floor(Math.min.apply(null, mins) / 60) - 1) : 6;
       const toHour = mins.length
         ? Math.min(24, Math.ceil(Math.max.apply(null, mins) / 60) + 1) : 22;
+      CAL_WINDOW = {from: fromHour, to: toHour};
       // Rounded: 90 * 0.7 is 63.00000000000001 in floating point, and that
       // is what would land in the style attribute otherwise.
       const height = Math.round((toHour - fromHour) * 60 * CAL_PX_PER_MIN);
@@ -1994,11 +2046,16 @@
           inner += '<div class="wk-block' + (b.clash ? ' clash' : '') +
               (b.ghost ? ' ghost' : '') + (b.open ? ' open' : '') +
               (b.cont ? ' cont' : '') + '" ' +
+            (b.play !== null
+              ? 'data-id="' + b.id + '" data-play="' + b.play + '" ' +
+                'data-end="' + b.ender + '" data-s="' + b.absStart + '" ' +
+                'data-e="' + (b.absEnd === null ? '' : b.absEnd) + '" '
+              : '') +
             'style="top:' + top(b.start) + 'px;' +
               'height:' + Math.max(14, Math.round((b.end - b.start) * CAL_PX_PER_MIN)) + 'px;' +
               'left:' + (b.lane * width) + '%;width:' + width + '%" ' +
             'title="' + escapeHtml(when + ' · ' + b.label) + '" ' +
-            'onclick="editRoutine(\'' + b.id + '\')">' +
+            'onclick="calBlockClick(\'' + b.id + '\')">' +
             escapeHtml(b.label) + '</div>';
         });
         cal.markers.filter(m => m.day === d).forEach(m => {
@@ -2012,10 +2069,11 @@
           inner += '<div class="wk-now" style="top:' + top(nowMin) + 'px"></div>';
         }
         return '<div class="wk-day' + (d === todayIdx ? ' today' : '') + '" ' +
+               'data-day="' + d + '" ' +
                'style="height:' + height + 'px">' + inner + '</div>';
       }).join('');
 
-      el.innerHTML =
+      el.innerHTML = calPalette() +
         '<div class="wk-head"><div></div>' +
           DAY_NAMES.map((name, d) =>
             '<div class="' + (d === todayIdx ? 'today' : '') + '">' +
@@ -2028,9 +2086,276 @@
     });
   }
 
+  // ---- Calendar drag ----------------------------------------------------
+  //
+  // Pointer events unify mouse and touch. A press only becomes a drag after
+  // a few pixels of travel, so a plain tap still opens the editor; once it
+  // is a drag, the click that fires on release is squelched. Blocks and
+  // chips carry touch-action:none so the browser hands the gesture to us
+  // instead of scrolling the pane -- the column background still scrolls.
+
+  const CAL_SNAP_MINUTES = 5;
+  const CAL_DRAG_THRESHOLD_PX = 6;
+  let CAL_LIST = [];                    // what renderCalendar last drew
+  let CAL_WINDOW = {from: 6, to: 22};   // hour range of the drawn grid
+  let CAL_SQUELCH = false;              // eat the click right after a drag
+  let CAL_SOURCES_TRIED = false;        // palette lists fetched at most once
+
+  function calSnap(minute) {
+    return Math.round(minute / CAL_SNAP_MINUTES) * CAL_SNAP_MINUTES;
+  }
+
+  function calBlockClick(id) {
+    if (CAL_SQUELCH) { CAL_SQUELCH = false; return; }
+    editRoutine(id);
+  }
+
+  function calChipClick(chip) {
+    if (CAL_SQUELCH) { CAL_SQUELCH = false; return; }
+    openEditor(null, {uri: chip.dataset.uri, name: chip.dataset.name});
+  }
+
+  // Rebuild a routine's save payload with one block moved or resized.
+  // Everything is absolute minutes from the trigger day's midnight; the
+  // trigger then re-anchors to the earliest step and offsets re-derive from
+  // it -- the same rule the editor applies. endIndex -1 with a non-null
+  // newEnd inserts the pause an open block was missing. Returns {payload}
+  // or {error} -- validation happens here, not after a rejected 400.
+  function blockSavePayload(s, playIndex, endIndex, newStart, newEnd) {
+    const trigger = toMinutes(s.time);
+    const steps = (s.steps || []).map(st => {
+      const out = {abs: trigger + st.offset, action: st.action};
+      if (st.uri) out.uri = st.uri;
+      if (st.volume !== undefined && st.volume !== null) out.volume = st.volume;
+      return out;
+    });
+    steps[playIndex].abs = newStart;
+    if (endIndex >= 0) steps[endIndex].abs = newEnd;
+    else if (newEnd !== null) {
+      steps.splice(playIndex + 1, 0, {abs: newEnd, action: 'pause'});
+    }
+    if (steps.some(st => st.abs < 0)) {
+      return {error: 'That would start before the routine’s own midnight'};
+    }
+    const newTrigger = Math.min.apply(null, steps.map(st => st.abs));
+    if (steps.some(st => st.abs - newTrigger > MAX_STEP_OFFSET_MIN)) {
+      return {error: 'Steps span more than 12 hours — split this into two routines'};
+    }
+    steps.sort((a, b) => a.abs - b.abs);
+    return {payload: {
+      id: s.id, time: fromMinutes(newTrigger), days: s.days || [],
+      label: s.label || '', enabled: s.enabled !== false,
+      steps: steps.map(st => {
+        const out = {offset: st.abs - newTrigger, action: st.action};
+        if (st.uri) out.uri = st.uri;
+        if (st.volume !== undefined && st.volume !== null) out.volume = st.volume;
+        return out;
+      }),
+    }};
+  }
+
+  // A chip dropped on the grid becomes a one-day routine on the spot: play
+  // at the drop minute, pause an hour later. Instant and editable beats a
+  // form -- click the block afterwards to refine it.
+  function dropSavePayload(uri, label, day, minute) {
+    const start = Math.max(0, Math.min(1440 - CAL_SNAP_MINUTES, calSnap(minute)));
+    return {
+      time: fromMinutes(start), days: [day], label: label, enabled: true,
+      steps: [
+        {offset: 0, action: 'play', uri: uri},
+        {offset: 60, action: 'pause'},
+      ],
+    };
+  }
+
+  function calMinuteAt(clientY, dayEl) {
+    const rect = dayEl.getBoundingClientRect();
+    return CAL_WINDOW.from * 60 + (clientY - rect.top) / CAL_PX_PER_MIN;
+  }
+
+  function calTip(x, y, text) {
+    let tip = document.getElementById('cal-tip');
+    if (!tip) {
+      tip = document.createElement('div');
+      tip.id = 'cal-tip';
+      tip.className = 'wk-tip';
+      document.body.appendChild(tip);
+    }
+    tip.style.left = (x + 14) + 'px';
+    tip.style.top = (y - 30) + 'px';
+    tip.textContent = text;
+  }
+
+  function calTipGone() {
+    const tip = document.getElementById('cal-tip');
+    if (tip) tip.remove();
+  }
+
+  function calPointerDown(e) {
+    const block = e.target.closest('.wk-block[data-play]');
+    if (block) { calBlockPress(e, block); return; }
+    const chip = e.target.closest('.wk-chip');
+    if (chip) calChipPress(e, chip);
+  }
+
+  function calBlockPress(e, el) {
+    const s = CAL_LIST.find(x => x.id === el.dataset.id);
+    if (!s) return;
+    const playIndex = +el.dataset.play;
+    const endIndex = +el.dataset.end;
+    const absStart = +el.dataset.s;
+    const absEnd = el.dataset.e === '' ? null : +el.dataset.e;
+    // Which day column this copy lives in never matters: a vertical drag is
+    // a pure minute delta, applied to every painted copy at once -- which is
+    // also how the user sees that moving Tuesday moves the other days too.
+    const dayShift = Math.floor(absStart / 1440) * 1440;
+    const rect = el.getBoundingClientRect();
+    const grabY = e.clientY - rect.top;
+    // Edge zones resize; the middle moves. On an open block the bottom edge
+    // is how the missing end gets created in the first place.
+    const mode = grabY >= rect.height - 8 ? 'end'
+               : grabY <= 8 ? 'start' : 'move';
+    const downY = e.clientY;
+    const copies = document.querySelectorAll(
+      '.wk-block[data-id="' + s.id + '"][data-play="' + playIndex + '"]');
+    let dragging = false;
+    let curStart = absStart, curEnd = absEnd;
+
+    const paint = () => {
+      const visEnd = curEnd === null ? curStart + OPEN_TAIL_MINUTES : curEnd;
+      copies.forEach(c => {
+        c.style.top = Math.round(
+          (curStart - dayShift - CAL_WINDOW.from * 60) * CAL_PX_PER_MIN) + 'px';
+        c.style.height = Math.max(14, Math.round(
+          (visEnd - curStart) * CAL_PX_PER_MIN)) + 'px';
+      });
+    };
+
+    const move = ev => {
+      const deltaMin = (ev.clientY - downY) / CAL_PX_PER_MIN;
+      if (!dragging && Math.abs(ev.clientY - downY) < CAL_DRAG_THRESHOLD_PX) return;
+      dragging = true;
+      const lowest = dayShift + CAL_WINDOW.from * 60;
+      if (mode === 'move') {
+        curStart = Math.max(lowest, Math.min(dayShift + 1440 - CAL_SNAP_MINUTES,
+                                             calSnap(absStart + deltaMin)));
+        if (absEnd !== null) curEnd = curStart + (absEnd - absStart);
+      } else if (mode === 'start') {
+        const cap = (absEnd === null ? dayShift + 1440 : absEnd) - CAL_SNAP_MINUTES;
+        curStart = Math.max(lowest, Math.min(cap, calSnap(absStart + deltaMin)));
+      } else {
+        const base = absEnd === null ? absStart + OPEN_TAIL_MINUTES : absEnd;
+        curEnd = Math.max(curStart + CAL_SNAP_MINUTES,
+                          Math.min(curStart + MAX_STEP_OFFSET_MIN,
+                                   calSnap(base + deltaMin)));
+      }
+      paint();
+      calTip(ev.clientX, ev.clientY, fromMinutes(curStart % 1440) + '–' +
+        (curEnd === null ? '…' : fromMinutes(curEnd % 1440)));
+    };
+
+    const finish = ev => {
+      el.removeEventListener('pointermove', move);
+      el.removeEventListener('pointerup', up);
+      el.removeEventListener('pointercancel', cancel);
+      calTipGone();
+    };
+    const cancel = ev => {
+      finish(ev);
+      if (dragging) renderCalendar();
+    };
+    const up = ev => {
+      finish(ev);
+      if (!dragging) return;              // a plain tap: the click opens the editor
+      CAL_SQUELCH = true;
+      const result = blockSavePayload(s, playIndex, endIndex, curStart, curEnd);
+      if (result.error) {
+        showToast('❌ ' + result.error);
+        renderCalendar();
+        return;
+      }
+      postJson('/schedule_save', result.payload).then(({ok, data}) => {
+        if (!ok) {
+          showToast('❌ ' + (data.error || 'Could not save'));
+          renderCalendar();
+          return;
+        }
+        showToast('⏰ ' + (s.label || 'Routine') + ' → ' + fromMinutes(curStart % 1440));
+        loadSchedules();
+      });
+    };
+
+    el.setPointerCapture(e.pointerId);
+    el.addEventListener('pointermove', move);
+    el.addEventListener('pointerup', up);
+    el.addEventListener('pointercancel', cancel);
+  }
+
+  function calChipPress(e, chip) {
+    const downX = e.clientX, downY = e.clientY;
+    let dragging = false, clone = null, overDay = null;
+
+    const move = ev => {
+      if (!dragging &&
+          Math.hypot(ev.clientX - downX, ev.clientY - downY) < CAL_DRAG_THRESHOLD_PX) return;
+      if (!dragging) {
+        dragging = true;
+        clone = chip.cloneNode(true);
+        clone.classList.add('dragging');
+        document.body.appendChild(clone);
+      }
+      clone.style.left = (ev.clientX + 10) + 'px';
+      clone.style.top = (ev.clientY + 10) + 'px';
+      // The clone is pointer-events:none, so elementFromPoint sees through
+      // it to the column underneath.
+      const under = document.elementFromPoint(ev.clientX, ev.clientY);
+      const day = under ? under.closest('.wk-day') : null;
+      if (overDay && overDay !== day) overDay.classList.remove('drop');
+      overDay = day;
+      if (day) {
+        day.classList.add('drop');
+        const minute = Math.max(0, calSnap(calMinuteAt(ev.clientY, day)));
+        calTip(ev.clientX, ev.clientY,
+               DAY_NAMES[+day.dataset.day] + ' ' + fromMinutes(minute % 1440));
+      } else {
+        calTipGone();
+      }
+    };
+
+    const up = ev => {
+      chip.removeEventListener('pointermove', move);
+      chip.removeEventListener('pointerup', up);
+      chip.removeEventListener('pointercancel', up);
+      if (clone) clone.remove();
+      calTipGone();
+      if (overDay) overDay.classList.remove('drop');
+      if (!dragging) return;              // a plain tap: the click prefills the editor
+      CAL_SQUELCH = true;
+      if (!overDay || ev.type === 'pointercancel') return;
+      const day = +overDay.dataset.day;
+      const payload = dropSavePayload(
+        chip.dataset.uri, chip.dataset.name, day, calMinuteAt(ev.clientY, overDay));
+      postJson('/schedule_save', payload).then(({ok, data}) => {
+        if (!ok) { showToast('❌ ' + (data.error || 'Could not save')); return; }
+        showToast('⏰ ' + chip.dataset.name + ' · ' +
+                  DAY_NAMES[day] + ' ' + payload.time);
+        loadSchedules();
+      });
+    };
+
+    chip.setPointerCapture(e.pointerId);
+    chip.addEventListener('pointermove', move);
+    chip.addEventListener('pointerup', up);
+    chip.addEventListener('pointercancel', up);
+  }
+
   document.addEventListener('keydown', e => {
     if (e.key === 'Escape' && EDITOR) closeEditor();
   });
+
+  // One delegated listener: the grid re-renders wholesale, so per-block
+  // handlers would be lost on every repaint.
+  document.getElementById('sched-cal').addEventListener('pointerdown', calPointerDown);
 
   // ---- Live updates -----------------------------------------------------
   // The player used to poll /nowplaying every 10s per open tab, which was
