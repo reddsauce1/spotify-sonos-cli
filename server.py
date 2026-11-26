@@ -1690,11 +1690,24 @@ class DJServer:
         kind = event.get('type', 'unknown')
         # topology-change fires on grouping and on discovery settling; it says
         # nothing about the track, so it is not worth waking every browser for.
+        # It is still logged: an unexplained one ~30s after playback stopped is
+        # the signature of the speaker dropping off the network and rejoining.
         if kind == 'topology-change':
+            log.info("Sonos event: %s", kind)
             return {"status": "ignored", "type": kind}
 
         payload = self._do_nowplaying()
         payload['event'] = kind
+        # The access log only shows that an event arrived. Playback was
+        # stopping mid-track with no command from us, and without the state
+        # each event carried there was no way to tell what the speaker reported.
+        log.info(
+            "Sonos event: %s state=%s track=%r at %ss/%ss volume=%s%s",
+            kind, payload.get('playbackState'), payload.get('title'),
+            payload.get('elapsed'), payload.get('duration'),
+            payload.get('volume'),
+            f" error={payload['error']}" if 'error' in payload else "",
+        )
         delivered = _broadcast(payload)
         _record_metric('events_received')
         return {"status": "broadcast", "type": kind, "clients": delivered}
