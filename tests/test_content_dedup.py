@@ -104,6 +104,53 @@ class TestWhatMustStillGetThrough:
         assert sonos.call_count == 2
 
 
+class TestClearingTheQueue:
+    """The cached result of a finished load describes the queue it landed in.
+    Once that queue is cleared, answering a re-add from the cache sends
+    nothing and reports success -- the "jammed queue" of 2026-11-26."""
+
+    CLEARED = {"status": "success"}
+
+    def test_a_reload_after_a_clear_reaches_sonos(self, dj, server_mod):
+        with patch.object(dj, "_sonos_request", return_value=QUEUED) as sonos:
+            dj._content_load("queue", PLAYLIST)
+            sonos.return_value = self.CLEARED
+            dj._do_clearqueue()
+            sonos.return_value = QUEUED
+            reload = dj._content_load("queue", PLAYLIST)
+        assert sonos.call_count == 3
+        assert "deduped" not in reload
+
+    def test_a_timed_out_load_survives_a_clear(self, dj, server_mod):
+        """It may still land after the clear; re-adding would stack a copy."""
+        with patch.object(dj, "_sonos_request", return_value=TIMEOUT) as sonos:
+            dj._content_load("queue", PLAYLIST)
+            sonos.return_value = self.CLEARED
+            dj._do_clearqueue()
+            second = dj._content_load("queue", PLAYLIST)
+        assert sonos.call_count == 2
+        assert second["deduped"] is True
+
+    def test_an_in_flight_load_survives_a_clear(self, dj, server_mod):
+        server_mod._content_loads[("queue", PLAYLIST)] = {
+            'at': server_mod.time.monotonic(), 'finished': None,
+            'result': None, 'ambiguous': False,
+        }
+        with patch.object(dj, "_sonos_request", return_value=self.CLEARED):
+            dj._do_clearqueue()
+        assert ("queue", PLAYLIST) in server_mod._content_loads
+
+    def test_a_failed_clear_keeps_the_cache(self, dj, server_mod):
+        """The queue was not emptied, so the cached load is still true."""
+        with patch.object(dj, "_sonos_request", return_value=QUEUED) as sonos:
+            dj._content_load("queue", PLAYLIST)
+            sonos.return_value = REFUSED
+            dj._do_clearqueue()
+            sonos.return_value = QUEUED
+            second = dj._content_load("queue", PLAYLIST)
+        assert second["deduped"] is True
+
+
 class TestThroughThePublicEndpoint:
     def test_queue_collapses_a_double_click(self, dj, server_mod):
         with patch.object(dj, "_sonos_request", return_value=QUEUED) as sonos:

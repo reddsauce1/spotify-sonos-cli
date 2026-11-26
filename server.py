@@ -2573,6 +2573,16 @@ class DJServer:
         result = self._sonos_request("clearqueue")
         if "error" in result:
             return result
+        # A finished load's cached result describes a queue that no longer
+        # exists. Kept, it answered "queued" for a re-add of the same playlist
+        # within the dedupe window while sending nothing, so clear-then-reload
+        # left an empty queue and resume 500'd. In-flight and timed-out loads
+        # are kept: those may still land after the clear, and re-adding on top
+        # of one is the 8,950-track pile-up the dedupe exists to stop.
+        with _content_lock:
+            for key in [k for k, v in _content_loads.items()
+                        if v['finished'] is not None and not v['ambiguous']]:
+                del _content_loads[key]
         return {"status": "queue cleared"}
 
     # ==================== PUBLIC API ENDPOINTS ====================
