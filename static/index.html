@@ -1136,6 +1136,15 @@
           return;
         }
         QUEUE_ROWS = data.queue || [];
+        // The queue shrank under a window that was paged forward -- cleared
+        // and refilled with a shorter playlist while on "↓ later". The slice
+        // past the end is empty, and an empty render draws no nav buttons, so
+        // the queue looked unpopulated with no way back. Offset 0 always
+        // terminates this.
+        if (!QUEUE_ROWS.length && QUEUE_OFFSET > 0) {
+          loadQueue(0);
+          return;
+        }
         const pos = data.track_no || 0;
         document.getElementById('chip-queue').textContent = 'Queue · playing ' + (pos || '—');
         document.getElementById('queue-status').textContent = pos
@@ -1266,7 +1275,7 @@
     if (!confirm('Clear the whole Sonos queue?')) return;
     fetch('/clearqueue').then(r => r.json()).then(data => {
       showToast(data.error ? '❌ ' + data.error : '🗑 Queue cleared');
-      loadQueue();
+      loadQueue(0);
     });
   }
 

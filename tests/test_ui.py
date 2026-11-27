@@ -653,3 +653,56 @@ class TestChipsOnMobile:
         rule = re.search(r"\.chip\s*\{([^}]*)\}", css).group(1)
         assert "text-overflow: ellipsis" in rule
         assert "min-width: 0" in rule
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node not installed")
+class TestTheQueueWindowRecoversWhenTheQueueShrinks:
+    """2026-11-27: paged to "↓ later" (offset 50), then cleared and refilled
+    with an 11-track playlist. Every refresh asked for tracks 51-100, got
+    nothing, and an empty render draws no nav -- so the adds looked like they
+    had not landed, with no way back to the top."""
+
+    @staticmethod
+    def _run(epilogue):
+        with open(INDEX) as f:
+            markup = f.read()
+        script = (
+            "const _els = {};\n"
+            "const document = {getElementById: id => _els[id] ||"
+            " (_els[id] = {textContent: '', innerHTML: ''})};\n"
+            "function wireDragAndDrop() {}\n"
+            "const _asked = [];\n"
+            "const fetch = url => {\n"
+            "  const offset = +new URL(url, 'http://x').searchParams.get('offset');\n"
+            "  _asked.push(offset);\n"
+            "  const queue = offset === 0 && !globalThis.EMPTY_QUEUE\n"
+            "    ? [{title: 'Send My Fond Regards', artist: 'Lucinda', uri: 'u1'}] : [];\n"
+            "  return Promise.resolve({json: () => Promise.resolve("
+            "{queue: queue, offset: offset, limit: 50, track_no: 1})});\n"
+            "};\n"
+            "let QUEUE_OFFSET = 0;\nlet QUEUE_ROWS = [];\n"
+            + "\n".join(extract_function(markup, name) for name in
+                        ("escapeHtml", "loadQueue", "renderQueue"))
+            + "\n" + epilogue
+        )
+        out = subprocess.run(["node", "-e", script],
+                             capture_output=True, text=True, timeout=30)
+        assert out.returncode == 0, out.stderr
+        return json.loads(out.stdout)
+
+    def test_an_empty_page_past_the_end_falls_back_to_the_top(self):
+        result = self._run(
+            "loadQueue(50);\n"
+            "setTimeout(() => console.log(JSON.stringify({asked: _asked,"
+            " offset: QUEUE_OFFSET, html: _els['queue-list'].innerHTML})), 10);\n")
+        assert result["asked"] == [50, 0]
+        assert result["offset"] == 0
+        assert "Send My Fond Regards" in result["html"]
+
+    def test_a_genuinely_empty_queue_does_not_loop(self):
+        result = self._run(
+            "globalThis.EMPTY_QUEUE = true;\nloadQueue(0);\n"
+            "setTimeout(() => console.log(JSON.stringify({asked: _asked,"
+            " html: _els['queue-list'].innerHTML})), 10);\n")
+        assert result["asked"] == [0]
+        assert "Nothing here" in result["html"]
