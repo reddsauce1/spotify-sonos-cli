@@ -139,3 +139,21 @@ class TestTheCrashLogStaysSeparate:
         assert re.search(r"%dMB" % megabytes, prose), \
             f"the {megabytes}MB per-file cap is not stated"
         assert str(server_mod.LOG_BACKUP_COUNT) in prose
+
+
+class TestTheSuiteLeavesTheLiveLogAlone:
+    """Tests used to write stubbed events into logs/spotify-server.log,
+    interleaved with real ones, while that log was being read to diagnose
+    playback stopping."""
+
+    def test_the_handler_is_not_on_the_live_log(self, server_mod):
+        assert os.path.abspath(server_mod._handler.baseFilename) \
+            != os.path.abspath(server_mod.LOG_PATH)
+
+    def test_a_logged_line_lands_in_the_redirected_file(
+            self, server_mod, _keep_test_logs_out_of_the_server_log):
+        marker = "test-suite-marker-7c1e"
+        server_mod.log.info(marker)
+        server_mod._handler.flush()
+        with open(_keep_test_logs_out_of_the_server_log) as redirected:
+            assert marker in redirected.read()

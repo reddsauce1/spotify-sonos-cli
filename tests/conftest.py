@@ -70,6 +70,28 @@ def _import_server():
 server_module = _import_server()
 
 
+@pytest.fixture(autouse=True, scope="session")
+def _keep_test_logs_out_of_the_server_log(tmp_path_factory):
+    """Redirect the shared rotating handler to a temp file for the whole run.
+
+    server.py opens logs/spotify-server.log at import, so the suite was
+    writing stubbed events ("Shakin' All Over", state=None) into the live log
+    in between real Sonos events -- the very log being read to diagnose them.
+
+    The handler object itself is repointed rather than replaced: the dj
+    logger and both cherrypy loggers share it, and tests check that identity.
+    A closed FileHandler in append mode reopens at baseFilename on its next
+    emit, so closing it and changing the path is enough. LOG_PATH is left
+    alone because tests assert on the production location.
+    """
+    handler = server_module._handler
+    handler.close()
+    handler.baseFilename = str(
+        tmp_path_factory.mktemp("logs") / "spotify-server.log")
+    yield handler.baseFilename
+    handler.close()
+
+
 @pytest.fixture
 def dj():
     """Return a fresh DJServer instance for testing."""
